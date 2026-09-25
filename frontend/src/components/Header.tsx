@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRouter } from "next/navigation";
@@ -8,44 +9,76 @@ import { useAuth } from "@/components/AuthProvider";
 
 const navItems = [
   { label: "Workspace", href: "/dashboard" },
-  { label: "Reports", href: "/reports" },
 ];
+
+// Scroll distance after which the marketing capsule nav starts shrinking.
+const SCROLL_SHRINK_THRESHOLD = 40;
 
 export function Header() {
   const pathname = usePathname();
   const router = useRouter();
-  const { isAuthenticated, isReady, signOut, user } = useAuth();
+  const { isAuthenticated, signOut, user } = useAuth();
 
   // Marketing chrome (landing + login): logo and a single CTA only, no app nav.
-  // TEST BUILD — see UI_UX_REVIEW.md section 1. Full landing redesign still pending.
   const isMarketingRoute = pathname === "/" || pathname === "/login";
+
+  const [isScrolled, setIsScrolled] = useState(false);
+
+  // rAF-throttled scroll listener — only active on marketing routes, where the
+  // capsule nav shrinks from 100% to ~80% width once the page has scrolled past
+  // SCROLL_SHRINK_THRESHOLD.
+  useEffect(() => {
+    if (!isMarketingRoute) return;
+
+    let rafId: number | null = null;
+
+    const handleScroll = () => {
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        setIsScrolled(window.scrollY > SCROLL_SHRINK_THRESHOLD);
+        rafId = null;
+      });
+    };
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", handleScroll);
+      if (rafId !== null) cancelAnimationFrame(rafId);
+    };
+  }, [isMarketingRoute]);
 
   if (isMarketingRoute) {
     return (
-      <header className="fixed top-0 left-0 right-0 w-full z-50 bg-surface-base/95 backdrop-blur-xl border-b border-border-crisp">
-        <div className="h-16 w-full px-space-xl flex items-center justify-between gap-space-md">
-          <Link href="/" className="flex items-center gap-space-sm">
-            <div className="w-8 h-8 rounded-lg bg-primary-container flex items-center justify-center">
+      <header className="fixed inset-x-0 top-0 z-50 flex justify-center px-space-lg pt-space-sm">
+        <div
+          className={`flex items-center gap-space-md h-14 w-full max-w-5xl rounded-full border border-border-crisp bg-surface-card/95 backdrop-blur-xl shadow-xl px-space-lg transition-all duration-300 ease-out ${
+            isScrolled ? "sm:w-4/5" : "sm:w-full"
+          }`}
+        >
+          <Link href="/" className="flex items-center gap-space-sm min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-primary-container flex items-center justify-center shrink-0">
               <span className="material-symbols-outlined text-surface-base text-[18px]">
                 terrain
               </span>
             </div>
-            <span className="font-headline-md text-headline-md font-bold tracking-tight text-text-primary">
-              CMPDI GeoReport AI
+            <span className="font-mono-citation text-mono-citation text-text-secondary uppercase tracking-wider truncate">
+              PS #26023 <span className="text-text-muted">&middot;</span> CMPDI GeoReport AI
             </span>
           </Link>
+
+          <div className="flex-1" />
 
           {isAuthenticated ? (
             <Link
               href="/dashboard"
-              className="rounded-lg bg-primary-container px-space-base py-2 font-body-sm font-semibold text-surface-base hover:bg-mining-gold-deep transition-colors"
+              className="shrink-0 rounded-full bg-primary-container px-space-lg py-2 font-body-sm font-semibold text-surface-base hover:bg-mining-gold-deep transition-colors"
             >
               Go to Workspace
             </Link>
           ) : (
             <Link
               href="/login"
-              className="rounded-lg border border-primary-container px-space-base py-2 font-body-sm font-semibold text-mining-gold-bright hover:bg-surface-card"
+              className="shrink-0 rounded-full border border-primary-container px-space-lg py-2 font-body-sm font-semibold text-mining-gold-bright hover:bg-surface-hover transition-colors"
             >
               Sign in
             </Link>
@@ -108,24 +141,6 @@ export function Header() {
 
         {/* Right: Status + User */}
         <div className="flex items-center gap-space-md min-w-max">
-          {/* Operational Subsidiary */}
-          <div className="hidden lg:flex flex-col items-end px-space-sm py-0.5 rounded bg-surface-card border border-border-crisp">
-            <span className="font-mono-label text-mono-label text-text-muted uppercase tracking-wider">
-              Operational Subsidiary
-            </span>
-            <span className="font-body-sm text-body-sm font-semibold text-text-primary flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-mining-gold-bright" />
-              BCCL Dhanbad
-            </span>
-          </div>
-
-          <div className="hidden md:flex items-center gap-space-xs px-space-sm py-1 rounded bg-surface-card border border-border-crisp">
-            <span className={`w-2 h-2 rounded-full ${isAuthenticated ? "bg-govtech-emerald" : "bg-text-muted"}`} />
-            <span className="font-mono-citation text-mono-citation text-text-secondary font-semibold">
-              {!isReady ? "Checking session" : isAuthenticated ? "Signed in" : "Sign in required"}
-            </span>
-          </div>
-
           {/* Notification Bell */}
           <div className="relative flex items-center justify-center">
             <button

@@ -62,6 +62,34 @@ export interface DocumentRecord {
   status: "processed" | "demo" | "pending" | "failed";
 }
 
+/**
+ * Shape returned by `GET /api/v1/documents` (documentController.js -> Document
+ * model). This is a *different* shape from `DocumentRecord` above (which
+ * mirrors the upload-response document): Mongo's `_id` instead of `id`,
+ * `fileSize` instead of `size`, an `uploadedAt` timestamp, and a distinct
+ * status enum. Kept as a sibling type rather than merged into
+ * `DocumentRecord` to avoid making every field optional/ambiguous.
+ */
+export interface DocumentListItem {
+  _id: string;
+  fileName: string;
+  fileSize: number;
+  uploadedAt: string;
+  status: "processing" | "completed" | "failed";
+  summary?: string;
+  kpis?: Record<string, unknown>;
+  wordCloud?: unknown[];
+  topics?: unknown[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface DocumentsListResponse {
+  success: true;
+  count: number;
+  documents: DocumentListItem[];
+}
+
 export interface Citation {
   source: string;
   page: number;
