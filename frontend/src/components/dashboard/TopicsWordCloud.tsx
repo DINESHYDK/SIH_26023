@@ -79,7 +79,7 @@ export function TopicsWordCloud({
         </div>
 
         <Link
-          href="/reports"
+          href="/dashboard"
           className="mt-space-lg inline-flex items-center gap-1 text-body-sm font-semibold text-mining-gold-bright hover:text-primary transition-colors"
         >
           Open Statutory Decision Briefs{" "}

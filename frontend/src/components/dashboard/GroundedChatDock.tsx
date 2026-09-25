@@ -32,8 +32,14 @@ export function GroundedChatDock({
   dataMode,
 }: GroundedChatDockProps) {
   return (
-    <section className="rounded-xl border border-border-crisp bg-surface-card p-space-lg shadow-sm">
-      <div className="flex flex-wrap items-center justify-between gap-space-sm border-b border-border-crisp pb-space-sm">
+    // `flex h-full flex-col`: this fills whatever bounded height the caller
+    // gives it (the `main` column in [folderId]/page.tsx, itself flex-1
+    // min-h-0 inside the page's fixed-height row). The scrollable area below
+    // is `flex-1 min-h-0 overflow-y-auto` so it — not the whole section — is
+    // what scrolls, and the input form comes after it as a plain (non-flex-1)
+    // flex child, which naturally sits pinned to the bottom of the column.
+    <section className="flex h-full flex-col overflow-hidden rounded-xl border border-border-crisp bg-surface-card shadow-sm">
+      <div className="flex flex-shrink-0 flex-wrap items-center justify-between gap-space-sm border-b border-border-crisp p-space-lg pb-space-sm">
         <div>
           <h2 className="font-headline-md text-headline-md font-bold text-text-primary">
             Source-Grounded Parliamentary &amp; Geological Q&amp;A
@@ -45,67 +51,76 @@ export function GroundedChatDock({
         <DataModeBadge dataMode={dataMode} />
       </div>
 
-      {/* Suggested Quick Prompt Chips */}
-      <div className="mt-space-md flex flex-wrap gap-space-xs">
-        {PRESET_CHIPS.map((chip) => (
-          <button
-            key={chip}
-            type="button"
-            onClick={() => onQueryChange(chip)}
-            className="rounded-full border border-border-crisp bg-surface-dim px-3 py-1 font-body-sm text-text-secondary hover:border-mining-gold-bright hover:text-text-primary transition-all text-left"
+      {/* Scrollable conversation area: suggested chips, response, and error
+          all live here so only this region scrolls, independently of the
+          sources panel and without pushing the input form off-screen. */}
+      <div className="min-h-0 flex-1 overflow-y-auto px-space-lg pb-space-md">
+        {/* Suggested Quick Prompt Chips */}
+        <div className="mt-space-md flex flex-wrap gap-space-xs">
+          {PRESET_CHIPS.map((chip) => (
+            <button
+              key={chip}
+              type="button"
+              onClick={() => onQueryChange(chip)}
+              className="rounded-full border border-border-crisp bg-surface-dim px-3 py-1 font-body-sm text-text-secondary hover:border-mining-gold-bright hover:text-text-primary transition-all text-left"
+            >
+              {chip}
+            </button>
+          ))}
+        </div>
+
+        {/* Query Response Display */}
+        {queryResponse && (
+          <div className="mt-space-md rounded-xl border border-border-crisp bg-surface-dim p-space-md">
+            <div className="flex items-center gap-space-xs">
+              <span className="material-symbols-outlined text-[18px] text-mining-gold-bright">
+                smart_toy
+              </span>
+              <h3 className="text-body-sm font-semibold text-text-primary">
+                Synthesizer Resolution
+              </h3>
+            </div>
+            <div className="mt-space-sm text-body-md leading-relaxed text-text-secondary [&_code]:rounded [&_code]:bg-surface-card [&_code]:px-1 [&_code]:py-0.5 [&_h1]:mt-space-sm [&_h1]:font-bold [&_h1]:text-text-primary [&_h2]:mt-space-sm [&_h2]:font-bold [&_h2]:text-text-primary [&_h3]:mt-space-sm [&_h3]:font-semibold [&_h3]:text-text-primary [&_li]:ml-space-md [&_ol]:list-decimal [&_p]:mt-space-xs [&_strong]:text-text-primary [&_ul]:list-disc">
+              <ReactMarkdown>{queryResponse.answer}</ReactMarkdown>
+            </div>
+            {queryResponse.citations.length > 0 && (
+              <div className="mt-space-md border-t border-border-crisp pt-space-sm">
+                <p className="font-mono-label text-mono-label uppercase tracking-wider text-text-muted">
+                  Audit Citations
+                </p>
+                <div className="mt-space-xs flex flex-wrap gap-space-xs">
+                  {queryResponse.citations.map((citation, index) => (
+                    <span
+                      key={`${citation.source}-${citation.page}-${index}`}
+                      className="inline-flex items-center gap-1 rounded border border-tertiary-container/40 bg-tertiary-container/10 px-2 py-1 font-mono-citation text-mono-citation text-tertiary-container"
+                    >
+                      <span className="material-symbols-outlined text-[14px]">description</span>
+                      {citation.source}
+                      {citation.page ? ` · Page ${citation.page}` : ""}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {queryError && (
+          <p
+            role="alert"
+            className="mt-space-md rounded-lg border border-error/30 bg-error-container/20 p-space-sm text-body-sm text-error"
           >
-            {chip}
-          </button>
-        ))}
+            {queryError}
+          </p>
+        )}
       </div>
 
-      {/* Query Response Display */}
-      {queryResponse && (
-        <div className="mt-space-md rounded-xl border border-border-crisp bg-surface-dim p-space-md">
-          <div className="flex items-center gap-space-xs">
-            <span className="material-symbols-outlined text-[18px] text-mining-gold-bright">
-              smart_toy
-            </span>
-            <h3 className="text-body-sm font-semibold text-text-primary">
-              Synthesizer Resolution
-            </h3>
-          </div>
-          <div className="mt-space-sm text-body-md leading-relaxed text-text-secondary [&_code]:rounded [&_code]:bg-surface-card [&_code]:px-1 [&_code]:py-0.5 [&_h1]:mt-space-sm [&_h1]:font-bold [&_h1]:text-text-primary [&_h2]:mt-space-sm [&_h2]:font-bold [&_h2]:text-text-primary [&_h3]:mt-space-sm [&_h3]:font-semibold [&_h3]:text-text-primary [&_li]:ml-space-md [&_ol]:list-decimal [&_p]:mt-space-xs [&_strong]:text-text-primary [&_ul]:list-disc">
-            <ReactMarkdown>{queryResponse.answer}</ReactMarkdown>
-          </div>
-          {queryResponse.citations.length > 0 && (
-            <div className="mt-space-md border-t border-border-crisp pt-space-sm">
-              <p className="font-mono-label text-mono-label uppercase tracking-wider text-text-muted">
-                Audit Citations
-              </p>
-              <div className="mt-space-xs flex flex-wrap gap-space-xs">
-                {queryResponse.citations.map((citation, index) => (
-                  <span
-                    key={`${citation.source}-${citation.page}-${index}`}
-                    className="inline-flex items-center gap-1 rounded border border-tertiary-container/40 bg-tertiary-container/10 px-2 py-1 font-mono-citation text-mono-citation text-tertiary-container"
-                  >
-                    <span className="material-symbols-outlined text-[14px]">description</span>
-                    {citation.source}
-                    {citation.page ? ` · Page ${citation.page}` : ""}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {queryError && (
-        <p
-          role="alert"
-          className="mt-space-md rounded-lg border border-error/30 bg-error-container/20 p-space-sm text-body-sm text-error"
-        >
-          {queryError}
-        </p>
-      )}
-
-      {/* Input Dock */}
-      <form onSubmit={onSubmit} className="mt-space-md flex flex-col gap-space-sm sm:flex-row">
+      {/* Input Dock: a non-shrinking flex child after the flex-1 scroll
+          area above, so it's always pinned to the bottom of the column. */}
+      <form
+        onSubmit={onSubmit}
+        className="flex flex-shrink-0 flex-col gap-space-sm border-t border-border-crisp p-space-lg sm:flex-row"
+      >
         <label className="sr-only" htmlFor="workspace-question">
           Ask a question about the active context
         </label>

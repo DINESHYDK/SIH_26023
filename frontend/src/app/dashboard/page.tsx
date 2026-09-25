@@ -1,280 +1,228 @@
 "use client";
 
-import {
-  type ChangeEvent,
-  type FormEvent,
-  useEffect,
-  useState,
-} from "react";
-import { useAuth } from "@/components/AuthProvider";
+import { useEffect, useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import { ProtectedPage } from "@/components/ProtectedPage";
-import { MetricCard } from "@/components/ui/MetricCard";
-import { DataModeBadge } from "@/components/ui/DataModeBadge";
-import { DocumentUploadDock } from "@/components/dashboard/DocumentUploadDock";
-import { PitProductionBars } from "@/components/dashboard/PitProductionBars";
-import { TopicsWordCloud } from "@/components/dashboard/TopicsWordCloud";
-import { GroundedChatDock } from "@/components/dashboard/GroundedChatDock";
-import { ApiError, getMockReport, submitQuery, uploadDocument } from "@/lib/api";
-import type {
-  DocumentRecord,
-  QueryResponse,
-  ReportData,
-} from "@/lib/report-types";
+import { createFolder, deleteFolder, getFolders, type Folder } from "@/lib/folders";
 
-const MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024;
-const ACCEPTED_EXTENSIONS = ["pdf", "xlsx", "csv", "tif", "tiff"];
-
-function getErrorMessage(error: unknown): string {
-  if (error instanceof ApiError || error instanceof Error) {
-    return error.message;
-  }
-  return "Something went wrong. Please try again.";
-}
-
-function EmptyState({ onRetry }: { onRetry: () => void }) {
+/** Shared dashed-border empty state, reused from the previous document-grid
+ * version of this page. */
+function EmptyState({
+  icon,
+  title,
+  message,
+  actionLabel,
+  onAction,
+  actionIcon = "add_circle",
+}: {
+  icon: string;
+  title: string;
+  message: string;
+  actionLabel: string;
+  onAction: () => void;
+  actionIcon?: string;
+}) {
   return (
     <div className="flex min-h-[440px] flex-col items-center justify-center rounded-xl border border-dashed border-border-crisp bg-surface-card/40 p-space-xl text-center">
       <span className="material-symbols-outlined mb-space-sm text-[34px] text-mining-gold-bright">
-        cloud_off
+        {icon}
       </span>
-      <h1 className="font-headline-lg text-headline-lg font-bold text-text-primary">
-        Mine Workspace is Unavailable
-      </h1>
-      <p className="mt-space-sm max-w-lg text-body-md text-text-secondary">
-        We could not load the BCCL Jharia report from the gateway service. Check that the backend is running, then try again.
-      </p>
+      <h1 className="font-headline-lg text-headline-lg font-bold text-text-primary">{title}</h1>
+      <p className="mt-space-sm max-w-lg text-body-md text-text-secondary">{message}</p>
       <button
         type="button"
-        onClick={onRetry}
+        onClick={onAction}
         className="mt-space-lg inline-flex items-center gap-2 rounded-lg bg-primary-container px-space-lg py-2.5 font-body-md font-bold text-surface-base transition-colors hover:bg-mining-gold-deep"
       >
-        <span className="material-symbols-outlined text-[18px]">refresh</span>
-        Retry report load
+        <span className="material-symbols-outlined text-[18px]">{actionIcon}</span>
+        {actionLabel}
       </button>
     </div>
   );
 }
 
-export default function DashboardPage() {
-  const { user, token } = useAuth();
-  const [report, setReport] = useState<ReportData | null>(null);
-  const [reportError, setReportError] = useState<string | null>(null);
-  const [isLoadingReport, setIsLoadingReport] = useState(true);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [document, setDocument] = useState<DocumentRecord | null>(null);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
-  const [query, setQuery] = useState("");
-  const [queryResponse, setQueryResponse] = useState<QueryResponse | null>(null);
-  const [queryError, setQueryError] = useState<string | null>(null);
-  const [isQuerying, setIsQuerying] = useState(false);
+function formatCreatedDate(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "Unknown date";
+  return parsed.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
 
-  const loadReport = async () => {
-    setIsLoadingReport(true);
-    setReportError(null);
+/** Inline "+ Create folder" tile: a small form matching the existing
+ * input/border/focus patterns used on the login page, rather than a native
+ * window.prompt(). */
+function CreateFolderTile({
+  onCreate,
+  isCreating,
+  setIsCreating,
+}: {
+  onCreate: (name: string) => void;
+  isCreating: boolean;
+  setIsCreating: (value: boolean) => void;
+}) {
+  const [name, setName] = useState("");
 
-    try {
-      setReport(await getMockReport(token ?? undefined));
-    } catch (error) {
-      setReportError(getErrorMessage(error));
-    } finally {
-      setIsLoadingReport(false);
-    }
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    onCreate(trimmed);
+    setName("");
+    setIsCreating(false);
   };
+
+  if (isCreating) {
+    return (
+      <form
+        onSubmit={handleSubmit}
+        className="flex min-h-[180px] flex-col justify-between gap-space-sm rounded-xl border-2 border-dashed border-mining-gold-bright bg-surface-card/40 p-space-lg text-left"
+      >
+        <label className="flex flex-col gap-1.5 font-body-sm text-text-secondary">
+          Folder name
+          <input
+            autoFocus
+            className="rounded-lg border border-border-crisp bg-surface-base px-3 py-2 text-text-primary outline-none focus:border-mining-gold-bright"
+            maxLength={80}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="e.g. BCCL Jharia Basin"
+            value={name}
+          />
+        </label>
+        <div className="flex gap-space-xs">
+          <button
+            type="submit"
+            disabled={!name.trim()}
+            className="flex-1 rounded-lg bg-primary-container px-space-base py-2 font-body-sm font-bold text-surface-base transition-colors hover:bg-mining-gold-deep disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Create
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setIsCreating(false);
+              setName("");
+            }}
+            className="rounded-lg border border-border-crisp px-space-base py-2 font-body-sm text-text-secondary transition-colors hover:border-mining-gold-bright hover:text-text-primary"
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setIsCreating(true)}
+      className="flex min-h-[180px] flex-col items-center justify-center gap-space-xs rounded-xl border-2 border-dashed border-border-crisp bg-surface-card/40 p-space-lg text-center transition-colors hover:border-mining-gold-bright"
+    >
+      <span className="material-symbols-outlined text-[30px] text-mining-gold-bright">add_circle</span>
+      <span className="text-body-sm font-semibold text-text-primary">Create folder</span>
+      <span className="font-mono-citation text-mono-citation text-text-muted">
+        Group sources into a notebook
+      </span>
+    </button>
+  );
+}
+
+export default function DashboardPage() {
+  const router = useRouter();
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [isCreating, setIsCreating] = useState(false);
 
   useEffect(() => {
-    void loadReport();
+    setFolders(getFolders());
+    setIsLoaded(true);
   }, []);
 
-  const handleFileSelection = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    setUploadError(null);
-
-    if (!file) {
-      setSelectedFile(null);
-      return;
-    }
-
-    const extension = file.name.split(".").pop()?.toLowerCase();
-    if (!extension || !ACCEPTED_EXTENSIONS.includes(extension)) {
-      setSelectedFile(null);
-      setUploadError("Select a valid geological PDF, XLSX, CSV, TIF, or TIFF file.");
-      event.target.value = "";
-      return;
-    }
-
-    if (file.size > MAX_UPLOAD_SIZE_BYTES) {
-      setSelectedFile(null);
-      setUploadError("Files must be 50 MB or smaller.");
-      event.target.value = "";
-      return;
-    }
-
-    setSelectedFile(file);
+  const handleCreate = (name: string) => {
+    createFolder(name);
+    setFolders(getFolders());
   };
 
-  const handleUpload = async () => {
-    if (!selectedFile) {
-      setUploadError("Choose a supported file before uploading.");
-      return;
-    }
-
-    setIsUploading(true);
-    setUploadError(null);
-
-    try {
-      const response = await uploadDocument(selectedFile, token ?? undefined);
-      setDocument(response.document);
-      setReport(response.report);
-      setQueryResponse(null);
-      setSelectedFile(null);
-    } catch (error) {
-      setUploadError(getErrorMessage(error));
-    } finally {
-      setIsUploading(false);
-    }
-  };
-
-  const handleQuery = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const trimmedQuery = query.trim();
-    if (!trimmedQuery || !report) return;
-
-    setIsQuerying(true);
-    setQueryError(null);
-
-    try {
-      const response = await submitQuery(
-        trimmedQuery,
-        document?.id ?? report.metadata.reportId,
-        token ?? undefined
-      );
-      setQueryResponse(response);
-      setQuery("");
-    } catch (error) {
-      setQueryError(getErrorMessage(error));
-    } finally {
-      setIsQuerying(false);
-    }
+  const handleDelete = (folder: Folder) => {
+    const confirmed = window.confirm(
+      `Delete folder "${folder.name}"? This only removes the folder grouping — its source documents remain in your library.`,
+    );
+    if (!confirmed) return;
+    deleteFolder(folder.id);
+    setFolders(getFolders());
   };
 
   return (
     <ProtectedPage>
-      <div className="w-full px-space-base py-space-xl sm:px-space-xl">
-        {isLoadingReport ? (
+      <div className="mx-auto w-full max-w-[1680px] px-space-base py-space-xl sm:px-space-xl">
+        <header className="mb-space-lg">
+          <h1 className="font-headline-lg text-headline-lg font-bold text-text-primary">
+            Workspace Folders
+          </h1>
+          <p className="mt-space-xs text-body-md text-text-secondary">
+            Group your uploaded sources into folders, then chat across every document in a folder.
+          </p>
+        </header>
+
+        {!isLoaded ? (
           <div className="flex min-h-[440px] flex-col items-center justify-center gap-space-sm text-text-secondary">
             <span className="material-symbols-outlined animate-spin text-[32px] text-mining-gold-bright">
               progress_activity
             </span>
-            <p className="font-body-md">Loading BCCL Jharia workspace telemetry…</p>
+            <p className="font-body-md">Loading your folders…</p>
           </div>
-        ) : reportError || !report ? (
-          <EmptyState onRetry={() => void loadReport()} />
+        ) : folders.length === 0 && !isCreating ? (
+          <EmptyState
+            icon="folder_open"
+            title="No folders yet"
+            message="Create your first folder to group geological reports, drill logs, or compliance PDFs, then chat across every source inside it."
+            actionLabel="Create folder"
+            onAction={() => setIsCreating(true)}
+          />
         ) : (
-          <div className="mx-auto flex w-full max-w-[1680px] flex-col gap-space-lg">
-            {/* Header Status Bar */}
-            <section className="flex flex-col justify-between gap-space-base rounded-xl border border-border-crisp bg-surface-card p-space-lg lg:flex-row lg:items-center shadow-sm">
-              <div>
-                <div className="flex flex-wrap items-center gap-space-sm">
-                  <span className="material-symbols-outlined text-[27px] text-mining-gold-bright">
-                    landscape
-                  </span>
-                  <h1 className="font-headline-lg text-headline-lg font-bold text-text-primary">
-                    BCCL Jharia Workspace
-                  </h1>
-                  <DataModeBadge dataMode={report.dataMode} />
+          <div className="grid grid-cols-1 gap-space-lg sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            <CreateFolderTile onCreate={handleCreate} isCreating={isCreating} setIsCreating={setIsCreating} />
+
+            {folders.map((folder) => (
+              <div
+                key={folder.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => router.push(`/dashboard/${folder.id}`)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    router.push(`/dashboard/${folder.id}`);
+                  }
+                }}
+                className="flex min-h-[180px] cursor-pointer flex-col justify-between rounded-xl border border-border-crisp bg-surface-card p-space-lg text-left shadow-sm transition-colors hover:border-mining-gold-bright"
+              >
+                <div>
+                  <div className="flex items-start justify-between gap-space-sm">
+                    <span className="material-symbols-outlined text-[26px] text-mining-gold-bright">
+                      folder
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleDelete(folder);
+                      }}
+                      title="Delete folder"
+                      className="shrink-0 text-text-muted transition-colors hover:text-state-critical"
+                    >
+                      <span className="material-symbols-outlined text-[18px]">delete</span>
+                    </button>
+                  </div>
+                  <p className="mt-space-sm truncate font-body-md font-semibold text-text-primary">
+                    {folder.name}
+                  </p>
+                  <p className="mt-1 font-mono-citation text-mono-citation text-text-muted">
+                    Created {formatCreatedDate(folder.createdAt)}
+                  </p>
                 </div>
-                <p className="mt-space-xs text-body-md text-text-secondary">
-                  Active Operational Dossier · {report.metadata.period}
-                </p>
-                <p className="mt-0.5 font-mono-citation text-mono-citation text-text-muted">
-                  {report.metadata.title} · {report.metadata.region}
-                </p>
+                <span className="mt-space-sm inline-flex w-fit items-center gap-1.5 rounded-full border border-mining-gold-bright/40 bg-mining-gold-bright/10 px-2.5 py-0.5 font-mono-citation text-mono-citation font-semibold text-mining-gold-bright">
+                  {folder.documentIds.length} source{folder.documentIds.length === 1 ? "" : "s"}
+                </span>
               </div>
-              <div className="rounded-lg border border-border-crisp bg-surface-dim px-space-md py-space-sm text-right">
-                <p className="font-mono-label text-mono-label uppercase tracking-wider text-text-muted">
-                  Surveyor Session
-                </p>
-                <p className="text-body-sm font-semibold text-text-primary">
-                  {user?.name ?? user?.email ?? "Surveyor Officer"}
-                </p>
-              </div>
-            </section>
-
-            {/* Split Workspace Layout */}
-            <div className="grid grid-cols-1 gap-space-lg xl:grid-cols-[minmax(280px,0.32fr)_minmax(0,0.68fr)]">
-              {/* Left: Document Upload Dock */}
-              <DocumentUploadDock
-                selectedFile={selectedFile}
-                onFileSelect={handleFileSelection}
-                onUpload={() => void handleUpload()}
-                isUploading={isUploading}
-                uploadError={uploadError}
-                document={document}
-              />
-
-              {/* Right: Telemetry & Analytics Hub */}
-              <main className="flex min-w-0 flex-col gap-space-lg">
-                {/* 4 KPI Cards */}
-                <section className="grid grid-cols-1 gap-space-base sm:grid-cols-2 2xl:grid-cols-4">
-                  <MetricCard
-                    label="Coal Production"
-                    value={`${report.kpis.coalProductionMT} MT`}
-                    detail={`Target ${report.kpis.coalProductionTargetMT} MT`}
-                    icon="factory"
-                    trend="+6.2% YoY"
-                    trendPositive
-                  />
-                  <MetricCard
-                    label="Overburden Removed (OBR)"
-                    value={`${report.kpis.overburdenRemovalMCuM} M.Cu.M`}
-                    detail={`Target 30.50 M.Cu.M`}
-                    icon="landslide"
-                    trend="Pacing"
-                    trendPositive
-                  />
-                  <MetricCard
-                    label="Stripping Ratio"
-                    value={report.kpis.strippingRatio.toFixed(2)}
-                    detail={`Normative ${report.kpis.strippingRatioTarget.toFixed(2)}`}
-                    icon="balance"
-                    trend="+0.06 Variance"
-                  />
-                  <MetricCard
-                    label="Inferred Coking Reserves"
-                    value={`${report.kpis.inferredReservesMT} MT`}
-                    detail={report.kpis.activeSeams.join(", ")}
-                    icon="layers"
-                    trend="High Confidence"
-                    trendPositive
-                  />
-                </section>
-
-                {/* Pit-Wise Production Comparison Bars */}
-                <PitProductionBars
-                  productionByPit={report.productionByPit}
-                  period={report.metadata.period}
-                />
-
-                {/* Topics & Word Cloud Grid */}
-                <TopicsWordCloud
-                  wordcloud={report.wordcloud}
-                  topics={report.topics}
-                  executiveSections={report.executiveReport.sections}
-                />
-
-                {/* Source-Grounded Q&A Dock */}
-                <GroundedChatDock
-                  query={query}
-                  onQueryChange={setQuery}
-                  onSubmit={handleQuery}
-                  isQuerying={isQuerying}
-                  queryResponse={queryResponse}
-                  queryError={queryError}
-                  dataMode={queryResponse?.dataMode ?? report.dataMode}
-                />
-              </main>
-            </div>
+            ))}
           </div>
         )}
       </div>

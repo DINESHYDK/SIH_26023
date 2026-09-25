@@ -2,11 +2,10 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { SovereignStrip } from "@/components/landing/SovereignStrip";
 import { HeroSection } from "@/components/landing/HeroSection";
-import { MandatedPillars } from "@/components/landing/MandatedPillars";
-import { SubsidiaryFleet } from "@/components/landing/SubsidiaryFleet";
-import { ComplianceBanner } from "@/components/landing/ComplianceBanner";
+import { HighlightPoints } from "@/components/landing/MandatedPillars";
+import { DemoVideo } from "@/components/landing/DemoVideo";
+import { MLPipeline } from "@/components/landing/MLPipeline";
 import { useAuth } from "@/components/AuthProvider";
 
 export default function LandingPage() {
@@ -23,11 +22,10 @@ export default function LandingPage() {
 
   return (
     <div className="flex flex-col w-full">
-      <SovereignStrip />
       <HeroSection />
-      <MandatedPillars />
-      <SubsidiaryFleet />
-      <ComplianceBanner />
+      <HighlightPoints />
+      <DemoVideo />
+      <MLPipeline />
     </div>
   );
 }
