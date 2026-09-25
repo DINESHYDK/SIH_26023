@@ -1,0 +1,39 @@
+{
+  "page_number": 2,
+  "section_heading": "Annex-I: Brief about Coal India Limited",
+  "narrative_text": "Purpose for which CPSE has been setup: To produce and market the planned quantity of coal and coal products efficiently and economically in an eco-friendly manner with due regard to safety, conservation and quality. Status: Maharatna. An addition of 53.12 MT of coal production is proposed in 2019-20 against the production of 606.88 Mt in 2018-19. Production of 29 mines suspended during 2018-19 (till Feb'19) & 5 new mines are likely to start contribution during 2019-20. Major chunk of CIL production is power grade coal; CIL's despatch to power house during 2017-18 was about 456 Mt and during 2018-19 was 488 MT. CIL is under administrative control of Ministry of Coal, Govt. of India.",
+  "tables": [
+    {
+      "table_id": "annex_i_cpse_brief",
+      "caption": "Brief about (Coal India Limited)",
+      "columns": [
+        "Item",
+        "Detail"
+      ],
+      "rows": [
+        {
+          "Item": "Name of the CPSE",
+          "Detail": "Coal India Limited"
+        },
+        {
+          "Item": "Status",
+          "Detail": "Maharatna"
+        },
+        {
+          "Item": "Share price NSE (10.05.2019)",
+          "Detail": "241.25"
+        },
+        {
+          "Item": "Share price BSE (10.05.2019)",
+          "Detail": "241.55"
+        },
+        {
+          "Item": "% of PAT given as dividend (FY2017-18)",
+          "Detail": "145.90%"
+        }
+      ],
+      "notes": null
+    }
+  ],
+  "signatories": []
+}

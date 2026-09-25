@@ -5,14 +5,17 @@ Problem Statement ID: 26023 | Ministry of Coal / CIL (CMPDI)
 """
 
 import os
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import uuid
+from datetime import date
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse, FileResponse
+from pydantic import BaseModel, root_validator
 from typing import Optional, Union
 from agents.document_ingestion import ingest_pdf, is_typed_pdf
 from agents.gemini_rate_limiter import GeminiRateLimitExceeded
 from agents.query_agent import stream_document_answer
+from agents.report_agent import generate_report
 import asyncio
 
 app = FastAPI(
@@ -61,6 +64,35 @@ class Citation(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     citations: list[Citation] = []
+
+
+class ReportRequest(BaseModel):
+    file_ids: Optional[list[str]] = None
+    date_from: Optional[date] = None
+    date_to: Optional[date] = None
+    instruction: Optional[str] = None
+
+    @root_validator(skip_on_failure=True)
+    def validate_selection(cls, values):
+        file_ids, date_from, date_to = values.get("file_ids"), values.get("date_from"), values.get("date_to")
+        if not file_ids and not (date_from and date_to):
+            raise ValueError("Provide file_ids or both date_from and date_to")
+        if (date_from is None) != (date_to is None):
+            raise ValueError("date_from and date_to must be supplied together")
+        if date_from and date_to and date_from > date_to:
+            raise ValueError("date_from must be on or before date_to")
+        return values
+
+
+report_jobs: dict[str, dict] = {}
+
+
+def _run_report_job(report_id: str, request: dict) -> None:
+    try:
+        report = generate_report({**request, "report_id": report_id})
+        report_jobs[report_id] = {"report_id": report_id, "status": "completed", "report": {**report, "report_url": f"/reports/{report_id}/download"}}
+    except Exception as exc:
+        report_jobs[report_id] = {"report_id": report_id, "status": "failed", "error": str(exc)}
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────
@@ -143,6 +175,41 @@ async def query_documents(request: QueryRequest):
             yield f"Query error: {exc}"
 
     return StreamingResponse(generate(),media_type="text/plain")
+
+
+@app.post("/generate-report", status_code=202)
+async def create_report(request: ReportRequest, background_tasks: BackgroundTasks):
+    """Queue a report; document selection and metrics run deterministically in its graph."""
+    report_id = f"rpt_{uuid.uuid4().hex[:12]}"
+    payload = request.dict()
+    payload["date_from"] = payload["date_from"].isoformat() if payload["date_from"] else None
+    payload["date_to"] = payload["date_to"].isoformat() if payload["date_to"] else None
+    # Convert dates back in the worker so the graph stays usable from Python too.
+    if payload["date_from"]:
+        payload["date_from"] = date.fromisoformat(payload["date_from"])
+        payload["date_to"] = date.fromisoformat(payload["date_to"])
+    report_jobs[report_id] = {"report_id": report_id, "status": "processing"}
+    background_tasks.add_task(_run_report_job, report_id, payload)
+    return report_jobs[report_id]
+
+
+@app.get("/reports/{report_id}")
+async def get_report(report_id: str):
+    job = report_jobs.get(report_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return job
+
+
+@app.get("/reports/{report_id}/download")
+async def download_report(report_id: str):
+    job = report_jobs.get(report_id)
+    if not job or job.get("status") != "completed":
+        raise HTTPException(status_code=404, detail="Completed report not found")
+    path = job["report"]["report_path"]
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Report file is unavailable")
+    return FileResponse(path, media_type="application/pdf", filename=f"{report_id}.pdf")
 
     # return QueryResponse(
     #     answer=(

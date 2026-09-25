@@ -1,7 +1,9 @@
 """Bridge the scanned-PDF RAG pipeline into the FastAPI application."""
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -40,6 +42,31 @@ class ScannedDocumentRAG:
                 "cache": root / "extracted_pages", "database": root / "structured_store.db",
                 "index": root / "index.pkl"}
 
+    def _persist_page_image_records(self, paths: dict[str, Path], page_numbers: list[int]) -> None:
+        """Persist Vision-page JSON with Base64 PNGs, outside retrieval chunks."""
+        import fitz
+        paths["images"].mkdir(parents=True, exist_ok=True)
+        paths["cache"].mkdir(parents=True, exist_ok=True)
+        manifest = []
+        with fitz.open(paths["pdf"]) as pdf:
+            for number in page_numbers:
+                candidates = list(paths["images"].glob(f"*{number}*.png"))
+                image_path = candidates[0] if candidates else paths["images"] / f"page_{number}.png"
+                if not image_path.exists():
+                    image_path.write_bytes(pdf[number - 1].get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False).tobytes("png"))
+                record = {"page_number": number, "image_mime_type": "image/png", "image_base64": base64.b64encode(image_path.read_bytes()).decode("ascii")}
+                cache_file = paths["cache"] / f"page_{number}.json"
+                if cache_file.exists():
+                    try:
+                        existing = json.loads(cache_file.read_text(encoding="utf-8"))
+                        if isinstance(existing, dict):
+                            record = {**existing, **record}
+                    except (OSError, json.JSONDecodeError):
+                        pass
+                cache_file.write_text(json.dumps(record), encoding="utf-8")
+                manifest.append(record)
+        (paths["cache"] / "pages.json").write_text(json.dumps(manifest), encoding="utf-8")
+
     def ingest(self, filename: str, content: bytes) -> dict:
         """Extract a scanned PDF with Gemini Vision and persist its retrieval index."""
         if not content:
@@ -74,8 +101,9 @@ class ScannedDocumentRAG:
             index.save(str(paths["index"]))
         finally:
             connection.close()
+        self._persist_page_image_records(paths, page_numbers)
         return {"document_id": document_id, "filename": filename, "pages": len(page_numbers),
-                "chunks": len(index.chunks), "status": "indexed"}
+                "chunks": len(index.chunks), "storage_location": str(paths["root"]), "status": "indexed"}
 
     def answer(self, question: str, document_id: str) -> dict:
         """Retrieve only from the requested document, then generate a cited answer."""
@@ -116,6 +144,15 @@ class ScannedDocumentRAG:
             connection.close()
 
         return result
+
+    def page_image_data_url(self, document_id: str, page_number: int) -> str | None:
+        """Return an OCR page as a multimodal LLM input, not textual output."""
+        images = self._paths(document_id)["images"]
+        candidates = list(images.glob(f"*{page_number}*.png"))
+        image_path = candidates[0] if candidates else images / f"page_{page_number}.png"
+        if not image_path.exists():
+            return None
+        return "data:image/png;base64," + base64.b64encode(image_path.read_bytes()).decode("ascii")
 
     def exists(self, document_id: str) -> bool:
         paths = self._paths(document_id)

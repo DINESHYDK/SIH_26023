@@ -61,12 +61,16 @@ class TypedDocumentRAG:
         if paths["index"].exists() and paths["chunks"].exists():
             with paths["chunks"].open("rb") as handle:
                 chunks = pickle.load(handle)
+            with fitz.open(paths["pdf"]) as pdf:
+                page_count = len(pdf)
             return {"document_id": document_id, "filename": filename, "chunks": len(chunks),
+                    "pages": page_count, "storage_location": str(paths["root"]),
                     "document_type": "typed", "status": "already_indexed"}
 
         paths["pdf"].write_bytes(content)
         chunks: list[dict] = []
         with fitz.open(stream=content, filetype="pdf") as pdf:
+            page_count = len(pdf)
             for page_number, page in enumerate(pdf, start=1):
                 chunks.extend(_chunk_page(page.get_text("text"), page_number))
         if not chunks:
@@ -79,8 +83,8 @@ class TypedDocumentRAG:
         faiss.write_index(index, str(paths["index"]))
         with paths["chunks"].open("wb") as handle:
             pickle.dump(chunks, handle)
-        return {"document_id": document_id, "filename": filename, "chunks": len(chunks),
-                "document_type": "typed", "status": "indexed"}
+        return {"document_id": document_id, "filename": filename, "chunks": len(chunks), "pages": page_count,
+                "storage_location": str(paths["root"]), "document_type": "typed", "status": "indexed"}
 
     def retrieve(self, question: str, document_id: str, k: int = 5) -> list[dict]:
         paths = self._paths(document_id)

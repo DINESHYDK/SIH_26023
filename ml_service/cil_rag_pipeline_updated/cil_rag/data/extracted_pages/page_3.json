@@ -1,0 +1,67 @@
+{
+  "page_number": 3,
+  "section_heading": "Annex-II: Mandatory Parameters, Part A, Coal India Limited",
+  "narrative_text": "Best in last 5 years is prior to and excluding FY 2018-19.",
+  "tables": [
+    {
+      "table_id": "annex_ii_part_a",
+      "caption": "Mandatory Parameters Part A - Coal India Limited",
+      "columns": [
+        "Financial Performance Criteria",
+        "Unit",
+        "Marks",
+        "2018-19 (RE)",
+        "Best in Last 5 years",
+        "MoU Target - Excellent",
+        "MoU Target - V.G.",
+        "MoU Target - Good",
+        "MoU Target - Fair",
+        "MoU Target - Poor",
+        "Improvement (%)"
+      ],
+      "rows": [
+        {
+          "Financial Performance Criteria": "Turnover - Revenue from Operations (Net)",
+          "Unit": "Rs. crore",
+          "Marks": "10",
+          "2018-19 (RE)": "92000",
+          "Best in Last 5 years": "85862 (2017-18)",
+          "MoU Target - Excellent": "100000",
+          "MoU Target - V.G.": "95000",
+          "MoU Target - Good": "90000",
+          "MoU Target - Fair": "85000",
+          "MoU Target - Poor": "80000",
+          "Improvement (%)": "3.26"
+        },
+        {
+          "Financial Performance Criteria": "Operating Profit as % of Revenue from Operations (net)",
+          "Unit": "%",
+          "Marks": "20",
+          "2018-19 (RE)": "15.00",
+          "Best in Last 5 years": "22.25 (2013-14)",
+          "MoU Target - Excellent": "17.5",
+          "MoU Target - V.G.": "15.50",
+          "MoU Target - Good": "14.50",
+          "MoU Target - Fair": "14.00",
+          "MoU Target - Poor": "13.50",
+          "Improvement (%)": "3.33"
+        },
+        {
+          "Financial Performance Criteria": "Return on investment - PAT / Average Net Worth",
+          "Unit": "%",
+          "Marks": "20",
+          "2018-19 (RE)": "58.15",
+          "Best in Last 5 years": "38.46 (2015-16)",
+          "MoU Target - Excellent": "68",
+          "MoU Target - V.G.": "65",
+          "MoU Target - Good": "63",
+          "MoU Target - Fair": "62",
+          "MoU Target - Poor": "61",
+          "Improvement (%)": "11.78"
+        }
+      ],
+      "notes": "Best in last 5 years is prior to and excluding FY 2018-19."
+    }
+  ],
+  "signatories": []
+}
