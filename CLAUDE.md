@@ -21,16 +21,15 @@ setup/run instructions and the full API table.
   (`/dashboard/[folderId]/reports`), pre-scoped to that folder's documents.
   There's no standalone `/reports` route.
 
-## ⚠️ Folders are currently frontend-only — but a real backend now exists
+## Folders are real, server-side, and use Mongo `_id`s
 
-`frontend/src/lib/folders.ts` stores folders in **localStorage**
-(`{id, name, documentIds[]}`), because it was built before the backend had a
-Folder model. **The backend now has a real one** (`Folder` model,
-`GET/POST/PATCH/DELETE /api/v1/folders`, ownership-checked, auto-unlinks
-documents on delete) — the frontend has not yet been migrated to use it. If
-you're touching the Workspace, check whether that migration has happened
-before assuming folders are still local-only; if not, migrating is the
-highest-value remaining piece of backend integration work.
+The Workspace calls the real `Folder` API (`GET/POST/PATCH/DELETE
+/api/v1/folders`) — there is no localStorage folder store anymore. A folder's
+`documentIds` are **Mongo `_id`s** (matching `GET /api/v1/documents`'
+`_id`), not ML ids. `GET/PATCH /api/v1/folders/:id` return documents
+*populated* (full `DocumentListItem` objects), so the frontend rarely needs a
+separate `GET /api/v1/documents` call except to offer "add from library"
+candidates not yet in the folder.
 
 ## ⚠️ Two document ID systems — do not mix them up
 
@@ -65,8 +64,6 @@ highest-value remaining piece of backend integration work.
 - Never confirmed whether `queryController.js` transforms the ML service's
   streaming plain-text `/query` response into the `{answer, citations}` JSON
   shape the frontend's chat UI expects.
-- Frontend Workspace folders not yet migrated to the real `/api/v1/folders`
-  API (see above).
 
 ## Working docs in this repo
 

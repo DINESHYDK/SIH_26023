@@ -116,7 +116,7 @@ All routes are mounted under `/api/v1` on the backend gateway (port 5000), which
 - MongoDB `_id` on the `Document` model — used by `GET/DELETE /documents`, and by `Folder.documentIds`.
 - The ML service's own content-hash id (`document.mlDocumentId` on the same `Document` record, populated after a successful upload) — this is the **only** id `/query`'s `context_doc` accepts. A document uploaded before this field existed has `mlDocumentId: null` and can't be used for Q&A until re-uploaded.
 
-> ⚠️ The real `/api/v1/folders` API above now exists server-side, but the frontend's Workspace (`frontend/src/lib/folders.ts`) still stores folders in **localStorage** as an interim measure from before this endpoint shipped. Migrating the frontend to call the real API is the next logical step — see `backend/TODO.md`.
+The frontend's Workspace is fully wired to the real `/api/v1/folders` API (folders are created/listed/opened/deleted server-side, synced to your account — no more localStorage-only folders).
 
 There is currently **no** `POST /api/v1/reports/generate` endpoint (multi-document + date-range report generation) — the Reports page's "Generate" button attempts this call and falls back to the `/reports/mock` demo data with a clear on-page banner when it 404s.
 
