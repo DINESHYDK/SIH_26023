@@ -79,6 +79,19 @@ const uploadDocument = async (req, res) => {
 
       const mlData = mlResponse.data;
 
+      // A 2xx body that isn't a JSON object (e.g. an HTML error page) is a failed ML call, not a report
+      if (!mlData || typeof mlData !== 'object' || Array.isArray(mlData)) {
+        if (docRecord) {
+          docRecord.status = 'failed';
+          await docRecord.save();
+        }
+        return res.status(502).json({
+          success: false,
+          message: 'The ML service returned an unexpected response.',
+          error: 'Malformed ML response',
+        });
+      }
+
       // Update DB record if it exists
       if (docRecord) {
         docRecord.status = 'completed';

@@ -95,6 +95,56 @@ describe('Document Endpoints', () => {
       expect(doc.fileName).toBe('test.pdf');
     });
 
+    it('should return a report with metadata.period and a document object for the frontend', async () => {
+      axios.post.mockResolvedValueOnce({ data: { summary: 'mocked summary' } });
+
+      const res = await request(app)
+        .post('/api/v1/documents/upload')
+        .attach('file', path.join(__dirname, 'test.pdf'));
+
+      expect(res.statusCode).toEqual(200);
+      expect(res.body.report.metadata.period).toBeTruthy();
+      expect(res.body.report.metadata.title).toBe('test.pdf');
+      expect(res.body.report.dataMode).toBe('processed');
+      expect(res.body.document).toMatchObject({ fileName: 'test.pdf', status: 'processed' });
+    });
+
+    it('should return 502 and persist as failed when ML returns a non-object body', async () => {
+      axios.post.mockResolvedValueOnce({ data: '<html>gateway error</html>' });
+
+      const res = await request(app)
+        .post('/api/v1/documents/upload')
+        .set('Authorization', `Bearer ${user1Token}`)
+        .attach('file', path.join(__dirname, 'test.pdf'));
+
+      expect(res.statusCode).toEqual(502);
+      expect(res.body).toHaveProperty('success', false);
+      expect(res.body).not.toHaveProperty('report');
+
+      const doc = await Document.findOne({ userId: user1._id });
+      expect(doc.status).toBe('failed');
+    });
+
+    it('should reject unsupported file types with a JSON 400', async () => {
+      const res = await request(app)
+        .post('/api/v1/documents/upload')
+        .attach('file', Buffer.from('x'), 'malware.exe');
+
+      expect(res.statusCode).toEqual(400);
+      expect(res.body.message).toMatch(/not allowed/);
+      expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    it('should reject files over 50 MB with a JSON 413', async () => {
+      const res = await request(app)
+        .post('/api/v1/documents/upload')
+        .attach('file', Buffer.alloc(50 * 1024 * 1024 + 1024), 'big.pdf');
+
+      expect(res.statusCode).toEqual(413);
+      expect(res.body).toHaveProperty('success', false);
+      expect(axios.post).not.toHaveBeenCalled();
+    });
+
     it('should handle ML service failure, persisting as failed', async () => {
       axios.post.mockRejectedValueOnce(new Error('ML offline'));
 
