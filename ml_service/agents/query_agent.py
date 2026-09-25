@@ -7,6 +7,7 @@ from typing import Any, AsyncIterator, TypedDict
 
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openrouter import ChatOpenRouter
 from langgraph.graph import END, START, StateGraph
 
 from agents.scanned_rag import scanned_document_rag
@@ -99,15 +100,21 @@ def _prepare_prompt(state: QueryState) -> QueryState:
 
 
 def _model() -> ChatGoogleGenerativeAI:
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    api_key = os.getenv("OPEN_ROUTER_API_KEY") #or os.getenv("GOOGLE_API_KEY")
     if not api_key:
-        raise RuntimeError("Set GEMINI_API_KEY (or GOOGLE_API_KEY) before generating answers")
-    return ChatGoogleGenerativeAI(
-        model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-        google_api_key=api_key,
-        temperature=0.2,
-        streaming=True,
-    )
+        raise RuntimeError("Set API_KEY (or GOOGLE_API_KEY) before generating answers")
+    # return ChatGoogleGenerativeAI(
+    #     model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+    #     google_api_key=api_key,
+    #     temperature=0.2,
+    #     streaming=True,
+    #)
+    return ChatOpenRouter(
+    model="openrouter/auto",
+    api_key=api_key,
+    temperature=0.2,
+    streaming=True,
+)
 
 
 def _token_text(content: Any) -> str:
