@@ -10,7 +10,7 @@ export function HeroSection() {
 
   return (
     <section
-      className="relative w-full min-h-[640px] flex items-center overflow-hidden bg-surface-dim bg-cover bg-center"
+      className="relative w-full min-h-screen flex items-center overflow-hidden bg-surface-dim bg-cover bg-center bg-no-repeat"
       style={{ backgroundImage: "url('/hero-background.png')" }}
     >
       {/* Scrims for text legibility over the background image */}

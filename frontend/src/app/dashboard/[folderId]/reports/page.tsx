@@ -1,14 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ApiError, generateReport, getDocuments, getMockReport } from "@/lib/api";
-import type { DocumentListItem, ReportData } from "@/lib/report-types";
+import { ApiError, generateReport, getFolder, getMockReport } from "@/lib/api";
+import type { DocumentListItem, FolderDetail, ReportData } from "@/lib/report-types";
 import { useAuth } from "@/components/AuthProvider";
 import { ProtectedPage } from "@/components/ProtectedPage";
 import { LoadingPanel } from "@/components/DataState";
-import { getFolder, type Folder } from "@/lib/folders";
 
 type GeneratePhase = "idle" | "loading" | "ready" | "error";
 
@@ -423,13 +422,11 @@ function FolderReportsContent({ folderId }: { folderId: string }) {
   const { token } = useAuth();
   const router = useRouter();
 
-  // `undefined` = not checked yet, `null` = checked and no such local folder
+  // `undefined` = not checked yet, `null` = checked and folder not found/owned
   // — same pattern as the workspace page at [folderId]/page.tsx.
-  const [folder, setFolder] = useState<Folder | null | undefined>(undefined);
+  const [folder, setFolder] = useState<FolderDetail | null | undefined>(undefined);
+  const [folderLoadError, setFolderLoadError] = useState<string | null>(null);
 
-  const [allDocuments, setAllDocuments] = useState<DocumentListItem[]>([]);
-  const [documentsLoading, setDocumentsLoading] = useState(true);
-  const [documentsError, setDocumentsError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -439,41 +436,30 @@ function FolderReportsContent({ folderId }: { folderId: string }) {
   const [fallbackNotice, setFallbackNotice] = useState<string | null>(null);
   const [generateError, setGenerateError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const found = getFolder(folderId) ?? null;
-    setFolder(found);
-    if (!found) {
-      router.replace("/dashboard");
+  const loadFolder = useCallback(async () => {
+    setFolderLoadError(null);
+    try {
+      const response = await getFolder(folderId, token ?? undefined);
+      setFolder(response.folder);
+    } catch (error) {
+      if (error instanceof ApiError && (error.status === 404 || error.status === 400 || error.status === 403)) {
+        router.replace("/dashboard");
+        return;
+      }
+      setFolderLoadError(getErrorMessage(error, "This folder could not be loaded."));
+      setFolder(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folderId]);
-
-  const loadDocuments = useCallback(async () => {
-    setDocumentsLoading(true);
-    setDocumentsError(null);
-
-    try {
-      const response = await getDocuments(token ?? undefined);
-      setAllDocuments(response.documents);
-    } catch (error) {
-      setDocumentsError(getErrorMessage(error, "Your document library could not be loaded."));
-    } finally {
-      setDocumentsLoading(false);
-    }
-  }, [token]);
+  }, [folderId, token]);
 
   useEffect(() => {
-    void loadDocuments();
-  }, [loadDocuments]);
+    void loadFolder();
+  }, [loadFolder]);
 
-  // Pre-scope the selection source to this folder's documentIds, instead of
-  // showing every document the user has ever uploaded. Folder documentIds are
-  // ML document ids (see DocumentListItem.mlDocumentId), not Mongo _ids.
-  const folderDocumentIds = folder?.documentIds ?? [];
-  const documents = useMemo(
-    () => allDocuments.filter((doc) => doc.mlDocumentId && folderDocumentIds.includes(doc.mlDocumentId)),
-    [allDocuments, folderDocumentIds],
-  );
+  // The real folder API returns documentIds already populated with full
+  // document records, so this IS the pre-scoped selection source — no
+  // separate GET /api/v1/documents + filter step needed.
+  const documents: DocumentListItem[] = folder?.documentIds ?? [];
 
   const toggleDocument = (id: string) => {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((existing) => existing !== id) : [...prev, id]));
@@ -513,17 +499,29 @@ function FolderReportsContent({ folderId }: { folderId: string }) {
     }
   }, [token, selectedIds, startDate, endDate]);
 
-  if (folder === undefined) {
+  if (folderLoadError) {
+    return (
+      <div className="flex min-h-[440px] flex-col items-center justify-center gap-space-sm p-space-lg text-center">
+        <span className="material-symbols-outlined text-[34px] text-state-critical">cloud_off</span>
+        <h1 className="font-headline-lg text-headline-lg font-bold text-text-primary">Couldn't open this folder</h1>
+        <p className="max-w-md text-body-md text-text-secondary">{folderLoadError}</p>
+        <button
+          type="button"
+          onClick={() => void loadFolder()}
+          className="mt-space-sm inline-flex items-center gap-2 rounded-lg bg-primary-container px-space-lg py-2.5 font-body-md font-bold text-surface-base transition-colors hover:bg-mining-gold-deep"
+        >
+          <span className="material-symbols-outlined text-[18px]">refresh</span>
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  if (!folder) {
     return <LoadingPanel>Opening folder…</LoadingPanel>;
   }
 
-  // folder === null is handled by the redirect effect above; render nothing
-  // while that navigation takes effect.
-  if (!folder) {
-    return null;
-  }
-
-  const folderIsEmpty = folderDocumentIds.length === 0;
+  const folderIsEmpty = documents.length === 0;
 
   return (
     <main className="mx-auto w-full max-w-[1440px] px-space-base py-space-xl sm:px-space-xl">
@@ -566,9 +564,9 @@ function FolderReportsContent({ folderId }: { folderId: string }) {
         <>
           <ReportSelectionPanel
             documents={documents}
-            documentsLoading={documentsLoading}
-            documentsError={documentsError}
-            onRetryDocuments={() => void loadDocuments()}
+            documentsLoading={false}
+            documentsError={null}
+            onRetryDocuments={() => void loadFolder()}
             selectedIds={selectedIds}
             onToggleDocument={toggleDocument}
             startDate={startDate}

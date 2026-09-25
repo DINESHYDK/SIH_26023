@@ -112,14 +112,36 @@ export interface QueryResponse {
 
 /**
  * Normalised result of `POST /api/v1/documents/upload`. `document.id` is the
- * ML document id (usable in /query's context_doc). `report` is only present
- * when the backend build includes the report overlay — older deployments
- * don't send it, so callers must not rely on it.
+ * ML document id (usable in /query's context_doc) when available, falling
+ * back to the Mongo id otherwise. `documentId` is always the Mongo `_id` —
+ * use THIS one for folder operations (PATCH /api/v1/folders/:id expects a
+ * Mongo ObjectId, not the ML hash id). `report` is only present when the
+ * backend build includes the report overlay — older deployments don't send
+ * it, so callers must not rely on it.
  */
 export interface UploadResponse {
   message: string;
+  documentId: string | null;
   document: DocumentRecord;
   report?: ReportData;
+}
+
+/** List-view shape from `GET /api/v1/folders` — documentIds are Mongo ids, unpopulated. */
+export interface FolderSummary {
+  _id: string;
+  name: string;
+  documentIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Detail shape from `GET/POST/PATCH /api/v1/folders/:id` — documentIds are populated Document objects. */
+export interface FolderDetail {
+  _id: string;
+  name: string;
+  documentIds: DocumentListItem[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface SafeUser {

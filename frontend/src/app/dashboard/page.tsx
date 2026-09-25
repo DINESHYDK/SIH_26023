@@ -1,9 +1,16 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import { useAuth } from "@/components/AuthProvider";
 import { ProtectedPage } from "@/components/ProtectedPage";
-import { createFolder, deleteFolder, getFolders, type Folder } from "@/lib/folders";
+import { ApiError, createFolder, deleteFolder, getFolders } from "@/lib/api";
+import type { FolderSummary } from "@/lib/report-types";
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof ApiError || error instanceof Error) return error.message;
+  return "Something went wrong. Please try again.";
+}
 
 /** Shared dashed-border empty state, reused from the previous document-grid
  * version of this page. */
@@ -54,10 +61,12 @@ function CreateFolderTile({
   onCreate,
   isCreating,
   setIsCreating,
+  isSubmitting,
 }: {
   onCreate: (name: string) => void;
   isCreating: boolean;
   setIsCreating: (value: boolean) => void;
+  isSubmitting: boolean;
 }) {
   const [name, setName] = useState("");
 
@@ -67,7 +76,6 @@ function CreateFolderTile({
     if (!trimmed) return;
     onCreate(trimmed);
     setName("");
-    setIsCreating(false);
   };
 
   if (isCreating) {
@@ -85,15 +93,16 @@ function CreateFolderTile({
             onChange={(event) => setName(event.target.value)}
             placeholder="e.g. BCCL Jharia Basin"
             value={name}
+            disabled={isSubmitting}
           />
         </label>
         <div className="flex gap-space-xs">
           <button
             type="submit"
-            disabled={!name.trim()}
+            disabled={!name.trim() || isSubmitting}
             className="flex-1 rounded-lg bg-primary-container px-space-base py-2 font-body-sm font-bold text-surface-base transition-colors hover:bg-mining-gold-deep disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Create
+            {isSubmitting ? "Creating…" : "Create"}
           </button>
           <button
             type="button"
@@ -101,7 +110,8 @@ function CreateFolderTile({
               setIsCreating(false);
               setName("");
             }}
-            className="rounded-lg border border-border-crisp px-space-base py-2 font-body-sm text-text-secondary transition-colors hover:border-mining-gold-bright hover:text-text-primary"
+            disabled={isSubmitting}
+            className="rounded-lg border border-border-crisp px-space-base py-2 font-body-sm text-text-secondary transition-colors hover:border-mining-gold-bright hover:text-text-primary disabled:opacity-50"
           >
             Cancel
           </button>
@@ -127,27 +137,54 @@ function CreateFolderTile({
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [folders, setFolders] = useState<Folder[]>([]);
-  const [isLoaded, setIsLoaded] = useState(false);
+  const { token } = useAuth();
+  const [folders, setFolders] = useState<FolderSummary[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const loadFolders = useCallback(async () => {
+    setIsLoading(true);
+    setLoadError(null);
+    try {
+      const response = await getFolders(token ?? undefined);
+      setFolders(response.folders);
+    } catch (error) {
+      setLoadError(getErrorMessage(error));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [token]);
 
   useEffect(() => {
-    setFolders(getFolders());
-    setIsLoaded(true);
-  }, []);
+    void loadFolders();
+  }, [loadFolders]);
 
-  const handleCreate = (name: string) => {
-    createFolder(name);
-    setFolders(getFolders());
+  const handleCreate = async (name: string) => {
+    setIsSubmitting(true);
+    try {
+      await createFolder(name, token ?? undefined);
+      setIsCreating(false);
+      await loadFolders();
+    } catch (error) {
+      window.alert(getErrorMessage(error));
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleDelete = (folder: Folder) => {
+  const handleDelete = async (folder: FolderSummary) => {
     const confirmed = window.confirm(
       `Delete folder "${folder.name}"? This only removes the folder grouping — its source documents remain in your library.`,
     );
     if (!confirmed) return;
-    deleteFolder(folder.id);
-    setFolders(getFolders());
+    try {
+      await deleteFolder(folder._id, token ?? undefined);
+      await loadFolders();
+    } catch (error) {
+      window.alert(getErrorMessage(error));
+    }
   };
 
   return (
@@ -162,13 +199,22 @@ export default function DashboardPage() {
           </p>
         </header>
 
-        {!isLoaded ? (
+        {isLoading ? (
           <div className="flex min-h-[440px] flex-col items-center justify-center gap-space-sm text-text-secondary">
             <span className="material-symbols-outlined animate-spin text-[32px] text-mining-gold-bright">
               progress_activity
             </span>
             <p className="font-body-md">Loading your folders…</p>
           </div>
+        ) : loadError ? (
+          <EmptyState
+            icon="cloud_off"
+            title="Couldn't load your folders"
+            message={loadError}
+            actionLabel="Retry"
+            actionIcon="refresh"
+            onAction={() => void loadFolders()}
+          />
         ) : folders.length === 0 && !isCreating ? (
           <EmptyState
             icon="folder_open"
@@ -179,17 +225,22 @@ export default function DashboardPage() {
           />
         ) : (
           <div className="grid grid-cols-1 gap-space-lg sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            <CreateFolderTile onCreate={handleCreate} isCreating={isCreating} setIsCreating={setIsCreating} />
+            <CreateFolderTile
+              onCreate={(name) => void handleCreate(name)}
+              isCreating={isCreating}
+              setIsCreating={setIsCreating}
+              isSubmitting={isSubmitting}
+            />
 
             {folders.map((folder) => (
               <div
-                key={folder.id}
+                key={folder._id}
                 role="button"
                 tabIndex={0}
-                onClick={() => router.push(`/dashboard/${folder.id}`)}
+                onClick={() => router.push(`/dashboard/${folder._id}`)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ") {
-                    router.push(`/dashboard/${folder.id}`);
+                    router.push(`/dashboard/${folder._id}`);
                   }
                 }}
                 className="flex min-h-[180px] cursor-pointer flex-col justify-between rounded-xl border border-border-crisp bg-surface-card p-space-lg text-left shadow-sm transition-colors hover:border-mining-gold-bright"
@@ -203,7 +254,7 @@ export default function DashboardPage() {
                       type="button"
                       onClick={(event) => {
                         event.stopPropagation();
-                        handleDelete(folder);
+                        void handleDelete(folder);
                       }}
                       title="Delete folder"
                       className="shrink-0 text-text-muted transition-colors hover:text-state-critical"

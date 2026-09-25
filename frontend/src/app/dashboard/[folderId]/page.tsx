@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type ChangeEvent, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/AuthProvider";
@@ -8,9 +8,8 @@ import { ProtectedPage } from "@/components/ProtectedPage";
 import { LoadingPanel } from "@/components/DataState";
 import { DocumentUploadDock, type SessionSource } from "@/components/dashboard/DocumentUploadDock";
 import { GroundedChatDock } from "@/components/dashboard/GroundedChatDock";
-import { ApiError, getDocuments, submitQuery, uploadDocument } from "@/lib/api";
-import { addDocumentToFolder, getFolder, removeDocumentFromFolder, type Folder } from "@/lib/folders";
-import type { DocumentListItem, QueryResponse } from "@/lib/report-types";
+import { ApiError, getDocuments, getFolder, submitQuery, updateFolder, uploadDocument } from "@/lib/api";
+import type { DocumentListItem, FolderDetail, QueryResponse } from "@/lib/report-types";
 
 const MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024;
 const ACCEPTED_EXTENSIONS = ["pdf", "xlsx", "csv", "tif", "tiff"];
@@ -31,14 +30,13 @@ export default function WorkspaceFolderPage({ params }: WorkspaceFolderPageProps
   const { token } = useAuth();
   const router = useRouter();
 
-  // `undefined` = not checked yet, `null` = checked and no such local folder.
-  const [folder, setFolder] = useState<Folder | null | undefined>(undefined);
+  // `undefined` = not checked yet, `null` = checked and folder not found/owned.
+  const [folder, setFolder] = useState<FolderDetail | null | undefined>(undefined);
+  const [folderLoadError, setFolderLoadError] = useState<string | null>(null);
 
-  const [documents, setDocuments] = useState<DocumentListItem[]>([]);
-  const [isLoadingDocuments, setIsLoadingDocuments] = useState(true);
-  // Local metadata for documents this session knows about but that
-  // getDocuments() hasn't (yet) returned — e.g. a file uploaded mid-session.
-  const [uploadedMeta, setUploadedMeta] = useState<Record<string, { fileName: string; status?: string }>>({});
+  // The user's full document library, to offer "add from your library" for
+  // documents not yet in this folder.
+  const [libraryDocuments, setLibraryDocuments] = useState<DocumentListItem[]>([]);
   const [isCollapsed, setIsCollapsed] = useState(false);
 
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -55,77 +53,75 @@ export default function WorkspaceFolderPage({ params }: WorkspaceFolderPageProps
   const [queryError, setQueryError] = useState<string | null>(null);
   const [isQuerying, setIsQuerying] = useState(false);
 
-  // Folder ids live only in localStorage. A stale/bad URL should bounce back
-  // to the folder grid rather than render a broken workspace.
-  useEffect(() => {
-    const found = getFolder(folderId) ?? null;
-    setFolder(found);
-    if (!found) {
-      router.replace("/dashboard");
+  const loadFolder = useCallback(async () => {
+    setFolderLoadError(null);
+    try {
+      const response = await getFolder(folderId, token ?? undefined);
+      setFolder(response.folder);
+    } catch (error) {
+      if (error instanceof ApiError && (error.status === 404 || error.status === 400 || error.status === 403)) {
+        // Doesn't exist / not owned / bad id — bounce back to the folder grid.
+        router.replace("/dashboard");
+        return;
+      }
+      // Any other failure (network, 5xx) is likely transient — offer a retry
+      // instead of kicking the user out of a folder that probably still exists.
+      setFolderLoadError(getErrorMessage(error));
+      setFolder(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folderId]);
+  }, [folderId, token]);
 
-  // Load the user's full document list once, to resolve display names for
-  // this folder's sources and to offer "add from library".
   useEffect(() => {
-    let cancelled = false;
-    setIsLoadingDocuments(true);
+    void loadFolder();
+  }, [loadFolder]);
 
+  // Load the user's full document list, to offer "add from library".
+  useEffect(() => {
     getDocuments(token ?? undefined)
-      .then((response) => {
-        if (!cancelled) setDocuments(response.documents);
-      })
+      .then((response) => setLibraryDocuments(response.documents))
       .catch(() => {
-        // Non-fatal: the folder still works with just the ids it already
-        // has, it just can't resolve display names or suggest other sources.
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoadingDocuments(false);
+        // Non-fatal: the folder still works with the documents it already has.
       });
-
-    return () => {
-      cancelled = true;
-    };
   }, [token]);
 
-  // Folder documentIds are ML document ids (required by /query's context_doc),
-  // not Mongo _ids — see DocumentListItem.mlDocumentId. A document with no
-  // mlDocumentId yet can't be looked up here or added to a folder's context.
-  const docMetaById = useMemo(() => {
-    const map = new Map<string, { fileName: string; status?: string }>();
-    documents.forEach((doc) => {
-      if (doc.mlDocumentId) map.set(doc.mlDocumentId, { fileName: doc.fileName, status: doc.status });
-    });
-    Object.entries(uploadedMeta).forEach(([id, meta]) => map.set(id, meta));
-    return map;
-  }, [documents, uploadedMeta]);
+  const folderDocuments = folder?.documentIds ?? [];
+  const folderDocumentMongoIds = folderDocuments.map((doc) => doc._id);
 
-  const documentIds = folder?.documentIds ?? [];
+  // /query's context_doc needs each document's ML id, not its Mongo _id.
+  // Documents without one yet (still processing, or ML failed) are simply
+  // left out of the chat context rather than sent as an invalid id.
+  const queryableDocumentIds = folderDocuments
+    .map((doc) => doc.mlDocumentId)
+    .filter((id): id is string => Boolean(id));
 
-  const sources: SessionSource[] = documentIds.map((id) => ({
-    id,
-    fileName: docMetaById.get(id)?.fileName ?? id,
-    status: docMetaById.get(id)?.status,
+  const sources: SessionSource[] = folderDocuments.map((doc) => ({
+    id: doc._id,
+    fileName: doc.fileName,
+    status: doc.mlDocumentId ? doc.status : `${doc.status} · not yet queryable`,
     isPrimary: false,
   }));
 
-  const availableDocuments = documents.filter(
-    (doc) => doc.mlDocumentId && !documentIds.includes(doc.mlDocumentId),
+  const availableDocuments = libraryDocuments.filter(
+    (doc) => !folderDocumentMongoIds.includes(doc._id),
   );
 
-  const refreshFolder = () => {
-    setFolder(getFolder(folderId) ?? null);
+  const handleAddExisting = async (mongoDocumentId: string) => {
+    try {
+      const response = await updateFolder(folderId, { addDocumentIds: [mongoDocumentId] }, token ?? undefined);
+      setFolder(response.folder);
+    } catch (error) {
+      window.alert(getErrorMessage(error));
+    }
   };
 
-  const handleAddExisting = (id: string) => {
-    addDocumentToFolder(folderId, id);
-    refreshFolder();
-  };
-
-  const handleRemoveSource = (id: string) => {
-    removeDocumentFromFolder(folderId, id);
-    refreshFolder();
+  const handleRemoveSource = async (mongoDocumentId: string) => {
+    try {
+      const response = await updateFolder(folderId, { removeDocumentIds: [mongoDocumentId] }, token ?? undefined);
+      setFolder(response.folder);
+    } catch (error) {
+      window.alert(getErrorMessage(error));
+    }
   };
 
   const handleFileSelection = (event: ChangeEvent<HTMLInputElement>) => {
@@ -169,29 +165,31 @@ export default function WorkspaceFolderPage({ params }: WorkspaceFolderPageProps
     setIsUploading(true);
     setUploadError(null);
 
-    // Backend only accepts one file per request, so multi-file selections are
-    // uploaded sequentially (not concurrently) to avoid overwhelming the
-    // free-tier ML service. Each success is linked into the folder as it
-    // completes; failures are surfaced but don't stop the remaining files.
+    // The frontend still uploads one file per request, sequentially, to avoid
+    // overwhelming the free-tier ML service — each success is attached to the
+    // folder as it completes; failures are surfaced but don't stop the rest.
     const failures: string[] = [];
     for (let index = 0; index < selectedFiles.length; index += 1) {
       const file = selectedFiles[index];
       setUploadProgress({ current: index + 1, total: selectedFiles.length });
       try {
         const response = await uploadDocument(file, token ?? undefined);
-        setUploadedMeta((prev) => ({
-          ...prev,
-          [response.document.id]: {
-            fileName: response.document.fileName,
-            status: response.document.status,
-          },
-        }));
-        addDocumentToFolder(folderId, response.document.id);
-        refreshFolder();
+        if (!response.documentId) {
+          failures.push(`${file.name}: uploaded, but the server didn't return an id to add it to this folder.`);
+          continue;
+        }
+        const updated = await updateFolder(folderId, { addDocumentIds: [response.documentId] }, token ?? undefined);
+        setFolder(updated.folder);
       } catch (error) {
         failures.push(`${file.name}: ${getErrorMessage(error)}`);
       }
     }
+
+    // Refresh the library list too, so newly uploaded files can be found via
+    // "add from library" from other folders in later sessions.
+    getDocuments(token ?? undefined)
+      .then((response) => setLibraryDocuments(response.documents))
+      .catch(() => {});
 
     setUploadProgress(null);
     setSelectedFiles([]);
@@ -204,8 +202,8 @@ export default function WorkspaceFolderPage({ params }: WorkspaceFolderPageProps
     const trimmedQuery = query.trim();
     if (!trimmedQuery) return;
 
-    if (documentIds.length === 0) {
-      setQueryError("Add at least one source to this folder before asking a question.");
+    if (queryableDocumentIds.length === 0) {
+      setQueryError("Add at least one processed source to this folder before asking a question.");
       return;
     }
 
@@ -213,7 +211,7 @@ export default function WorkspaceFolderPage({ params }: WorkspaceFolderPageProps
     setQueryError(null);
 
     try {
-      const response = await submitQuery(trimmedQuery, documentIds, token ?? undefined);
+      const response = await submitQuery(trimmedQuery, queryableDocumentIds, token ?? undefined);
       setQueryResponse(response);
       setQuery("");
     } catch (error) {
@@ -222,6 +220,26 @@ export default function WorkspaceFolderPage({ params }: WorkspaceFolderPageProps
       setIsQuerying(false);
     }
   };
+
+  if (folderLoadError) {
+    return (
+      <ProtectedPage>
+        <div className="flex min-h-[440px] flex-col items-center justify-center gap-space-sm p-space-lg text-center">
+          <span className="material-symbols-outlined text-[34px] text-state-critical">cloud_off</span>
+          <h1 className="font-headline-lg text-headline-lg font-bold text-text-primary">Couldn't open this folder</h1>
+          <p className="max-w-md text-body-md text-text-secondary">{folderLoadError}</p>
+          <button
+            type="button"
+            onClick={() => void loadFolder()}
+            className="mt-space-sm inline-flex items-center gap-2 rounded-lg bg-primary-container px-space-lg py-2.5 font-body-md font-bold text-surface-base transition-colors hover:bg-mining-gold-deep"
+          >
+            <span className="material-symbols-outlined text-[18px]">refresh</span>
+            Retry
+          </button>
+        </div>
+      </ProtectedPage>
+    );
+  }
 
   if (!folder) {
     return (
@@ -264,9 +282,7 @@ export default function WorkspaceFolderPage({ params }: WorkspaceFolderPageProps
               {folder.name}
             </h1>
             <p className="font-mono-citation text-mono-citation text-text-muted">
-              {isLoadingDocuments
-                ? "Resolving source names…"
-                : `${documentIds.length} source${documentIds.length === 1 ? "" : "s"}`}
+              {folderDocuments.length} source{folderDocuments.length === 1 ? "" : "s"}
             </p>
           </div>
           <Link
@@ -283,9 +299,9 @@ export default function WorkspaceFolderPage({ params }: WorkspaceFolderPageProps
             isCollapsed={isCollapsed}
             onToggleCollapse={() => setIsCollapsed((prev) => !prev)}
             sources={sources}
-            onRemoveSource={handleRemoveSource}
+            onRemoveSource={(id) => void handleRemoveSource(id)}
             availableDocuments={availableDocuments}
-            onAddExisting={handleAddExisting}
+            onAddExisting={(id) => void handleAddExisting(id)}
             selectedFiles={selectedFiles}
             onFileSelect={handleFileSelection}
             onUpload={() => void handleUpload()}
@@ -295,7 +311,7 @@ export default function WorkspaceFolderPage({ params }: WorkspaceFolderPageProps
           />
 
           <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-            {documentIds.length === 0 ? (
+            {folderDocuments.length === 0 ? (
               <div className="flex flex-1 flex-col items-center justify-center overflow-y-auto p-space-lg text-center">
                 <div className="flex min-h-[300px] w-full max-w-md flex-col items-center justify-center rounded-xl border border-dashed border-border-crisp bg-surface-card/40 p-space-xl">
                   <span className="material-symbols-outlined mb-space-sm text-[34px] text-mining-gold-bright">

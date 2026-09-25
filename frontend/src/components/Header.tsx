@@ -51,8 +51,8 @@ export function Header() {
     return (
       <header className="fixed inset-x-0 top-0 z-50 flex justify-center px-space-lg pt-space-sm">
         <div
-          className={`flex items-center gap-space-md h-14 w-full max-w-5xl rounded-full border border-border-crisp bg-surface-card/95 backdrop-blur-xl shadow-xl px-space-lg transition-all duration-300 ease-out ${
-            isScrolled ? "sm:w-4/5" : "sm:w-full"
+          className={`flex items-center gap-space-md h-14 w-full rounded-full border border-border-crisp bg-surface-card/95 backdrop-blur-xl shadow-xl px-space-lg transition-all duration-300 ease-out ${
+            isScrolled ? "max-w-4xl" : "max-w-5xl"
           }`}
         >
           <Link href="/" className="flex items-center gap-space-sm min-w-0">

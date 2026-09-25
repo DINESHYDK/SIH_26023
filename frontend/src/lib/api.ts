@@ -3,6 +3,8 @@ import type {
   CurrentUserResponse,
   DocumentRecord,
   DocumentsListResponse,
+  FolderDetail,
+  FolderSummary,
   QueryResponse,
   ReportData,
   UploadResponse,
@@ -105,12 +107,15 @@ export function getCurrentUser(token: string): Promise<CurrentUserResponse> {
 
 // Raw upload body. Newer backends send `document` + `report`; older deployments
 // only spread the ML result (`document_id`, ...) next to `fileName`/`size`.
+// `document_id` (snake_case, from the ML service) and `documentId` (camelCase,
+// the Mongo `_id` the backend adds) are two different ids — see UploadResponse.
 interface RawUploadResponse {
   message?: string;
   offline?: boolean;
   fileName?: string;
   size?: number;
   document_id?: string;
+  documentId?: string | null;
   document?: Partial<DocumentRecord>;
   report?: ReportData;
 }
@@ -139,6 +144,7 @@ export async function uploadDocument(file: File, token?: string): Promise<Upload
 
   return {
     message: raw.message || "Document processed successfully",
+    documentId: raw.documentId ?? null,
     document: {
       id,
       fileName: raw.document?.fileName || raw.fileName || file.name,
@@ -201,4 +207,48 @@ export async function generateReport(
     token,
   );
   return assertReportShape(report);
+}
+
+// --- Folders (GET /api/v1/folders) ---
+// Folder documentIds are Mongo _ids (same scheme as GET /api/v1/documents'
+// `_id`, NOT the ML document id) — see FolderSummary/FolderDetail.
+
+export function getFolders(token?: string): Promise<{ success: true; count: number; folders: FolderSummary[] }> {
+  return request("/api/v1/folders", {}, token);
+}
+
+export function createFolder(name: string, token?: string): Promise<{ success: true; folder: FolderSummary }> {
+  return request(
+    "/api/v1/folders",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    },
+    token,
+  );
+}
+
+export function getFolder(id: string, token?: string): Promise<{ success: true; folder: FolderDetail }> {
+  return request(`/api/v1/folders/${id}`, {}, token);
+}
+
+export function updateFolder(
+  id: string,
+  body: { name?: string; addDocumentIds?: string[]; removeDocumentIds?: string[] },
+  token?: string,
+): Promise<{ success: true; folder: FolderDetail }> {
+  return request(
+    `/api/v1/folders/${id}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    token,
+  );
+}
+
+export function deleteFolder(id: string, token?: string): Promise<{ success: true; message: string }> {
+  return request(`/api/v1/folders/${id}`, { method: "DELETE" }, token);
 }
