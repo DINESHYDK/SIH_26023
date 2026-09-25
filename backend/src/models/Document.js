@@ -15,6 +15,13 @@ const documentSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+  // The ML service's own content-hash id (16 hex chars) — distinct from this
+  // document's Mongo _id. /query's context_doc must be this id, not _id, so
+  // it's persisted here once known to survive a page refresh / new session.
+  mlDocumentId: {
+    type: String,
+    default: null,
+  },
   uploadedAt: {
     type: Date,
     default: Date.now,
