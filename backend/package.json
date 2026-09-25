@@ -1,0 +1,39 @@
+{
+  "name": "cmpdi-georeport-backend",
+  "version": "1.0.0",
+  "description": "Express API Gateway for CMPDI GeoReport AI (SIH 2026 - PS 26023)",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test": "jest --detectOpenHandles --forceExit"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testTimeout": 120000
+  },
+  "dependencies": {
+    "axios": "^1.20.0",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.2",
+    "express-rate-limit": "^8.7.0",
+    "form-data": "^4.0.6",
+    "google-auth-library": "^11.0.2",
+    "joi": "^18.2.8",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^8.24.4",
+    "morgan": "^1.12.0",
+    "multer": "^1.4.5-lts.1",
+    "pdfkit": "^0.20.2"
+  },
+  "devDependencies": {
+    "cross-env": "^10.1.0",
+    "jest": "^30.5.1",
+    "mongodb-memory-server": "^11.2.0",
+    "nodemon": "^3.1.14",
+    "supertest": "^7.2.2",
+    "tslib": "^2.8.1"
+  }
+}

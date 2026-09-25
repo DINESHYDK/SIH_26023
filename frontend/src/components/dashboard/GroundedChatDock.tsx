@@ -1,6 +1,7 @@
 "use client";
 
 import React, { type FormEvent } from "react";
+import ReactMarkdown from "react-markdown";
 import type { QueryResponse, ReportData } from "@/lib/report-types";
 import { DataModeBadge } from "@/components/ui/DataModeBadge";
 
@@ -69,9 +70,9 @@ export function GroundedChatDock({
               Synthesizer Resolution
             </h3>
           </div>
-          <p className="mt-space-sm whitespace-pre-wrap text-body-md leading-relaxed text-text-secondary">
-            {queryResponse.answer}
-          </p>
+          <div className="mt-space-sm text-body-md leading-relaxed text-text-secondary [&_code]:rounded [&_code]:bg-surface-card [&_code]:px-1 [&_code]:py-0.5 [&_h1]:mt-space-sm [&_h1]:font-bold [&_h1]:text-text-primary [&_h2]:mt-space-sm [&_h2]:font-bold [&_h2]:text-text-primary [&_h3]:mt-space-sm [&_h3]:font-semibold [&_h3]:text-text-primary [&_li]:ml-space-md [&_ol]:list-decimal [&_p]:mt-space-xs [&_strong]:text-text-primary [&_ul]:list-disc">
+            <ReactMarkdown>{queryResponse.answer}</ReactMarkdown>
+          </div>
           {queryResponse.citations.length > 0 && (
             <div className="mt-space-md border-t border-border-crisp pt-space-sm">
               <p className="font-mono-label text-mono-label uppercase tracking-wider text-text-muted">
