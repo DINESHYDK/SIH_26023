@@ -110,10 +110,16 @@ export interface QueryResponse {
   dataMode: DataMode;
 }
 
+/**
+ * Normalised result of `POST /api/v1/documents/upload`. `document.id` is the
+ * ML document id (usable in /query's context_doc). `report` is only present
+ * when the backend build includes the report overlay — older deployments
+ * don't send it, so callers must not rely on it.
+ */
 export interface UploadResponse {
   message: string;
   document: DocumentRecord;
-  report: ReportData;
+  report?: ReportData;
 }
 
 export interface SafeUser {

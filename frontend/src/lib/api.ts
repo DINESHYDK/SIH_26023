@@ -1,6 +1,7 @@
 import type {
   AuthResponse,
   CurrentUserResponse,
+  DocumentRecord,
   DocumentsListResponse,
   QueryResponse,
   ReportData,
@@ -102,17 +103,51 @@ export function getCurrentUser(token: string): Promise<CurrentUserResponse> {
   return request<CurrentUserResponse>("/api/v1/auth/me", {}, token);
 }
 
+// Raw upload body. Newer backends send `document` + `report`; older deployments
+// only spread the ML result (`document_id`, ...) next to `fileName`/`size`.
+interface RawUploadResponse {
+  message?: string;
+  offline?: boolean;
+  fileName?: string;
+  size?: number;
+  document_id?: string;
+  document?: Partial<DocumentRecord>;
+  report?: ReportData;
+}
+
+// /query's context_doc only accepts the ML service's 16-hex-char document id
+const ML_DOCUMENT_ID = /^[0-9a-f]{16}$/;
+
 export async function uploadDocument(file: File, token?: string): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
 
-  const response = await request<UploadResponse>(
+  const raw = await request<RawUploadResponse>(
     "/api/v1/documents/upload",
     { method: "POST", body: formData },
     token,
   );
-  assertReportShape(response.report);
-  return response;
+
+  if (raw.offline) {
+    throw new ApiError("The document was uploaded but the ML service is unavailable, so it could not be processed. Try again later.");
+  }
+
+  const id = raw.document_id || raw.document?.id;
+  if (!id || !ML_DOCUMENT_ID.test(id)) {
+    throw new ApiError("The document was uploaded but the ML service did not return a document id, so it can't be used for questions.");
+  }
+
+  return {
+    message: raw.message || "Document processed successfully",
+    document: {
+      id,
+      fileName: raw.document?.fileName || raw.fileName || file.name,
+      size: raw.document?.size ?? raw.size ?? file.size,
+      status: "processed",
+    },
+    // Only pass the report through when it is complete
+    report: raw.report?.metadata?.period ? raw.report : undefined,
+  };
 }
 
 export function submitQuery(
