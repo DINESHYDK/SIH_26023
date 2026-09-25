@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, Union
-from agents.document_ingestion import ingest_pdf
+from agents.document_ingestion import ingest_pdf, is_typed_pdf
 from agents.gemini_rate_limiter import GeminiRateLimitExceeded
 from agents.query_agent import stream_document_answer
 import asyncio
@@ -28,6 +28,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _worker_limit(setting: str, default: int) -> int:
+    """Read a positive per-process ingestion concurrency limit."""
+    try:
+        return max(1, int(os.getenv(setting, str(default))))
+    except ValueError:
+        return default
+
+
+# Typed PDFs are local CPU work, while scanned PDFs make Vision OCR requests.
+# Separate limits prevent a scan-heavy batch from exhausting API capacity.
+typed_ingestion_slots = asyncio.Semaphore(_worker_limit("MAX_TYPED_INGESTIONS", 3))
+scanned_ingestion_slots = asyncio.Semaphore(_worker_limit("MAX_SCANNED_INGESTIONS", 1))
 
 
 # ── Request / Response Models ──────────────────────────────────────────
@@ -61,10 +75,11 @@ async def process_documents(
     file: Optional[UploadFile] = File(None),
     files: Optional[list[UploadFile]] = File(None),
 ):
-    """Ingest one or more PDFs sequentially, classifying each independently.
+    """Ingest one or more PDFs with safe, bounded parallelism.
 
     Submit repeated ``files`` form fields for a batch. The legacy single
-    ``file`` form field remains supported.
+    ``file`` form field remains supported. Typed and scanned PDFs use separate
+    worker pools so OCR cannot consume all available ingestion capacity.
     """
     uploads = ([file] if file is not None else []) + (files or [])
     if not uploads:
@@ -72,20 +87,26 @@ async def process_documents(
     if any(not upload.filename for upload in uploads):
         raise HTTPException(status_code=400, detail="Every uploaded file must have a filename")
 
-    results = []
-    for upload in uploads:
+    async def ingest_upload(upload: UploadFile) -> dict:
         try:
-            # Deliberately await each job before starting the next one: OCR,
-            # embedding, and indexing are resource-heavy operations.
             content = await upload.read()
-            result = await asyncio.to_thread(ingest_pdf, upload.filename, content)
-            results.append({"filename": upload.filename, "status": "processed", "result": result})
+            is_typed = await asyncio.to_thread(is_typed_pdf, content)
+            slots = typed_ingestion_slots if is_typed else scanned_ingestion_slots
+            # Limit each category, but allow a typed PDF and a scanned PDF to
+            # progress together. Ingestion itself remains off the event loop.
+            async with slots:
+                result = await asyncio.to_thread(ingest_pdf, upload.filename, content)
+            return {"filename": upload.filename, "status": "processed", "result": result}
         except GeminiRateLimitExceeded as exc:
-            results.append({"filename": upload.filename, "status": "rate_limited", "error": str(exc)})
+            return {"filename": upload.filename, "status": "rate_limited", "error": str(exc)}
         except ValueError as exc:
-            results.append({"filename": upload.filename, "status": "failed", "error": str(exc)})
+            return {"filename": upload.filename, "status": "failed", "error": str(exc)}
         except Exception as exc:
-            results.append({"filename": upload.filename, "status": "failed", "error": str(exc)})
+            return {"filename": upload.filename, "status": "failed", "error": str(exc)}
+
+    # gather preserves the upload order in its results while workers run in
+    # parallel up to the limits above.
+    results = await asyncio.gather(*(ingest_upload(upload) for upload in uploads))
 
     # Retain the established successful single-upload response for existing clients.
     if len(uploads) == 1 and results[0]["status"] == "processed":
