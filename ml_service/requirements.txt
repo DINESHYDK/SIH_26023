@@ -1,0 +1,35 @@
+# Core
+numpy
+faiss-cpu
+sentence-transformers
+huggingface-hub
+google-generativeai
+python-dotenv
+python-dateutil
+
+# API
+fastapi
+uvicorn
+requests
+beautifulsoup4
+feedparser
+aiohttp
+
+# PDF
+reportlab
+pillow
+
+# Cache
+cachetools
+
+langchain
+langgraph
+langchain-community
+langchain-google-genai
+python-multipart
+langchain-openrouter
+
+# Scanned-document ingestion and hybrid retrieval
+PyMuPDF
+rank-bm25
+google-genai
