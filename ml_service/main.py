@@ -57,27 +57,50 @@ async def health_check():
 
 
 @app.post("/process-document")
-async def process_document(file: UploadFile = File(...)):
-    """
-    Ingests a typed PDF into FAISS or a scanned PDF through vision OCR, then returns its document ID.
-    Send that ID as ``context_doc`` to /query.
-    """
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No file provided")
+async def process_documents(
+    file: Optional[UploadFile] = File(None),
+    files: Optional[list[UploadFile]] = File(None),
+):
+    """Ingest one or more PDFs sequentially, classifying each independently.
 
-    try:
-        # Vision OCR and indexing are CPU/network-bound; keep FastAPI's event
-        # loop free so health checks and other requests still respond.
-        content = await file.read()
-        return await asyncio.to_thread(ingest_pdf, file.filename, content)
-    except GeminiRateLimitExceeded as exc:
-        # A planned quota rejection is not an ingestion failure; clients can
-        # retry after the configured rolling daily window has room.
-        raise HTTPException(status_code=429, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Document ingestion failed: {exc}") from exc
+    Submit repeated ``files`` form fields for a batch. The legacy single
+    ``file`` form field remains supported.
+    """
+    uploads = ([file] if file is not None else []) + (files or [])
+    if not uploads:
+        raise HTTPException(status_code=400, detail="No files provided")
+    if any(not upload.filename for upload in uploads):
+        raise HTTPException(status_code=400, detail="Every uploaded file must have a filename")
+
+    results = []
+    for upload in uploads:
+        try:
+            # Deliberately await each job before starting the next one: OCR,
+            # embedding, and indexing are resource-heavy operations.
+            content = await upload.read()
+            result = await asyncio.to_thread(ingest_pdf, upload.filename, content)
+            results.append({"filename": upload.filename, "status": "processed", "result": result})
+        except GeminiRateLimitExceeded as exc:
+            results.append({"filename": upload.filename, "status": "rate_limited", "error": str(exc)})
+        except ValueError as exc:
+            results.append({"filename": upload.filename, "status": "failed", "error": str(exc)})
+        except Exception as exc:
+            results.append({"filename": upload.filename, "status": "failed", "error": str(exc)})
+
+    # Retain the established successful single-upload response for existing clients.
+    if len(uploads) == 1 and results[0]["status"] == "processed":
+        return results[0]["result"]
+    if len(uploads) == 1 and results[0]["status"] == "rate_limited":
+        raise HTTPException(status_code=429, detail=results[0]["error"])
+    if len(uploads) == 1:
+        raise HTTPException(status_code=400, detail=results[0]["error"])
+
+    return {
+        "total": len(uploads),
+        "processed": sum(item["status"] == "processed" for item in results),
+        "failed": sum(item["status"] != "processed" for item in results),
+        "documents": results,
+    }
 
 #--> This endpoint gives streaming responses to facilitate good user experience
 @app.post("/query",response_class=StreamingResponse)#, response_model=QueryResponse)
