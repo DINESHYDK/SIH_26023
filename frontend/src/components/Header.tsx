@@ -7,7 +7,6 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/AuthProvider";
 
 const navItems = [
-  { label: "Home", href: "/" },
   { label: "Workspace", href: "/dashboard" },
   { label: "Reports", href: "/reports" },
 ];

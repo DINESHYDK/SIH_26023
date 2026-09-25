@@ -67,8 +67,18 @@ async function request<T>(path: string, init: RequestInit = {}, token?: string):
   }
 }
 
-export function getMockReport(token?: string): Promise<ReportData> {
-  return request<ReportData>("/api/v1/reports/mock", {}, token);
+function assertReportShape(report: ReportData): ReportData {
+  if (!report?.metadata?.period) {
+    throw new ApiError(
+      "The report service returned data in an unexpected format (missing metadata). The backend may need to be redeployed.",
+    );
+  }
+  return report;
+}
+
+export async function getMockReport(token?: string): Promise<ReportData> {
+  const report = await request<ReportData>("/api/v1/reports/mock", {}, token);
+  return assertReportShape(report);
 }
 
 export function registerUser(name: string, email: string, password: string): Promise<AuthResponse> {
@@ -91,15 +101,17 @@ export function getCurrentUser(token: string): Promise<CurrentUserResponse> {
   return request<CurrentUserResponse>("/api/v1/auth/me", {}, token);
 }
 
-export function uploadDocument(file: File, token?: string): Promise<UploadResponse> {
+export async function uploadDocument(file: File, token?: string): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
 
-  return request<UploadResponse>(
+  const response = await request<UploadResponse>(
     "/api/v1/documents/upload",
     { method: "POST", body: formData },
     token,
   );
+  assertReportShape(response.report);
+  return response;
 }
 
 export function submitQuery(query: string, contextDocument: string, token?: string): Promise<QueryResponse> {
