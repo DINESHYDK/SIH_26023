@@ -227,7 +227,7 @@ export function DocumentUploadDock({
                 <li key={doc._id}>
                   <button
                     type="button"
-                    onClick={() => onAddExisting(doc._id)}
+                    onClick={() => doc.mlDocumentId && onAddExisting(doc.mlDocumentId)}
                     className="flex w-full items-center justify-between gap-space-sm rounded-lg border border-border-crisp bg-surface-card px-space-sm py-space-xs text-left transition-colors hover:border-mining-gold-bright"
                   >
                     <span className="truncate text-body-sm text-text-secondary">{doc.fileName}</span>

@@ -87,3 +87,33 @@ per uploaded file) instead of the single `file` field, so it actually reaches
 the ML service's new batch parameter. Until this lands, the frontend works
 around it by calling the existing single-file endpoint once per file,
 sequentially.
+
+## 4. Fixed already (this change is in the working tree, not yet merged) — two document ID systems were being conflated
+
+Found while wiring up the frontend's folder Q&A: the ML service assigns each
+document its own content-hash id (16 hex chars — see `typed_rag.py`/`scanned_rag.py`,
+`hashlib.sha256(content).hexdigest()[:16]`), and `/query`'s `context_doc`
+strictly requires *that* id (`query_agent.py`'s `_validate_id` rejects
+anything that isn't exactly 16 hex chars). That id is completely different
+from `Document`'s Mongo `_id` (24-char ObjectId) — and the ML id was never
+persisted back to Mongo, only ever returned transiently in the upload
+response.
+
+Effect before this fix: `GET /api/v1/documents` could never expose an ML-queryable
+id at all, so any frontend flow that added an "existing" document (rather than
+a freshly-uploaded one) to a query's context would send `/query` a Mongo `_id`
+and get a validation failure.
+
+**Fix applied** (`backend/src/models/Document.js` + `documentController.js`'s
+`uploadDocument`): added a new `mlDocumentId` field to the `Document` schema,
+populated from `mlData.document_id` on successful upload. `GET /api/v1/documents`
+now returns it automatically (no route change needed, it doesn't `.select()`
+specific fields). Frontend now reads/writes `mlDocumentId` everywhere it needs
+an ML-queryable id, instead of `_id`.
+
+**Caveat**: any document uploaded *before* this field existed has
+`mlDocumentId: null` and can't be used in a query's context until re-uploaded.
+No backfill was attempted (there's no way to recover the ML id after the fact
+without re-running ingestion). If you want a backfill path instead of relying
+on re-upload, that'd need a one-off script calling the ML service again per
+old document — not done here.

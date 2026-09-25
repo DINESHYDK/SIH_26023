@@ -57,6 +57,9 @@ const markCompleted = async (docRecord, mlData) => {
   if (mlData.kpis) docRecord.kpis = mlData.kpis;
   if (mlData.wordcloud) docRecord.wordCloud = mlData.wordcloud;
   if (mlData.topics) docRecord.topics = mlData.topics;
+  // Persist the ML service's own id so /query can find this document
+  // again later (its context_doc validation requires this id, not _id).
+  if (typeof mlData.document_id === 'string' && mlData.document_id) docRecord.mlDocumentId = mlData.document_id;
   await docRecord.save();
 };
 

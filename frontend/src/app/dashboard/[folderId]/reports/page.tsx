@@ -467,10 +467,11 @@ function FolderReportsContent({ folderId }: { folderId: string }) {
   }, [loadDocuments]);
 
   // Pre-scope the selection source to this folder's documentIds, instead of
-  // showing every document the user has ever uploaded.
+  // showing every document the user has ever uploaded. Folder documentIds are
+  // ML document ids (see DocumentListItem.mlDocumentId), not Mongo _ids.
   const folderDocumentIds = folder?.documentIds ?? [];
   const documents = useMemo(
-    () => allDocuments.filter((doc) => folderDocumentIds.includes(doc._id)),
+    () => allDocuments.filter((doc) => doc.mlDocumentId && folderDocumentIds.includes(doc.mlDocumentId)),
     [allDocuments, folderDocumentIds],
   );
 

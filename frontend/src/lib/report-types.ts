@@ -72,6 +72,15 @@ export interface DocumentRecord {
  */
 export interface DocumentListItem {
   _id: string;
+  /**
+   * The ML service's own content-hash id (16 hex chars) — NOT the same as
+   * `_id`. Required by /query's context_doc; querying with `_id` instead
+   * fails ML-side validation. Null for documents uploaded before this field
+   * existed, or where ML processing never completed — such documents can't
+   * be used for Q&A and should be treated as non-addable to a folder's chat
+   * context.
+   */
+  mlDocumentId: string | null;
   fileName: string;
   fileSize: number;
   uploadedAt: string;

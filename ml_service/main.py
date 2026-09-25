@@ -72,7 +72,7 @@ async def health_check():
 
 @app.post("/process-document")
 async def process_documents(
-    #file: Optional[UploadFile] = File(None),
+    file: Optional[UploadFile] = File(None),
     files: list[UploadFile] = File(default=[]),
 ):
     """Ingest one or more PDFs with safe, bounded parallelism.
