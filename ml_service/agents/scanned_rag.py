@@ -10,6 +10,21 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PIPELINE_ROOT = PROJECT_ROOT / "cil_rag_pipeline_updated" / "cil_rag"
 DOCUMENT_ROOT = PROJECT_ROOT / "storage" / "scanned_documents"
 
+
+def _require_local_pipeline() -> None:
+    """Do not silently import an OCR pipeline left over in another checkout."""
+    required_files = (
+        PIPELINE_ROOT / "ingestion" / "ingest_pipeline.py",
+        PIPELINE_ROOT / "ingestion" / "vision_extract.py",
+        PIPELINE_ROOT / "ingestion" / "index_builder.py",
+        PIPELINE_ROOT / "query" / "query_pipeline.py",
+    )
+    if not all(path.is_file() for path in required_files):
+        raise RuntimeError(
+            "The local scanned-PDF pipeline is missing. Restore "
+            f"{PIPELINE_ROOT} from the source project before processing scanned PDFs."
+        )
+
 # The supplied pipeline uses imports such as ``from ingestion...``. Add its
 # root once rather than changing the friend's source layout or demo scripts.
 if str(PIPELINE_ROOT) not in sys.path:
@@ -31,6 +46,7 @@ class ScannedDocumentRAG:
             raise ValueError("The uploaded file is empty")
         if not filename.lower().endswith(".pdf"):
             raise ValueError("Only PDF uploads are supported")
+        _require_local_pipeline()
         # Content-derived IDs make repeated uploads idempotent and avoid trusting
         # a client-provided filename as a filesystem location.
         document_id = hashlib.sha256(content).hexdigest()[:16]
