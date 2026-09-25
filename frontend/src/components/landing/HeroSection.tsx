@@ -11,7 +11,7 @@ export function HeroSection() {
   return (
     <section
       className="relative w-full min-h-[640px] flex items-center overflow-hidden bg-surface-dim bg-cover bg-center"
-      style={{ backgroundImage: "url('/.jpg')" }}
+      style={{ backgroundImage: "url('/hero-background.png')" }}
     >
       {/* Scrims for text legibility over the background image */}
       <div className="absolute inset-0 bg-gradient-to-r from-surface-base via-surface-base/85 to-surface-base/30" />

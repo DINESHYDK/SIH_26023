@@ -89,9 +89,14 @@ export default function WorkspaceFolderPage({ params }: WorkspaceFolderPageProps
     };
   }, [token]);
 
+  // Folder documentIds are ML document ids (required by /query's context_doc),
+  // not Mongo _ids — see DocumentListItem.mlDocumentId. A document with no
+  // mlDocumentId yet can't be looked up here or added to a folder's context.
   const docMetaById = useMemo(() => {
     const map = new Map<string, { fileName: string; status?: string }>();
-    documents.forEach((doc) => map.set(doc._id, { fileName: doc.fileName, status: doc.status }));
+    documents.forEach((doc) => {
+      if (doc.mlDocumentId) map.set(doc.mlDocumentId, { fileName: doc.fileName, status: doc.status });
+    });
     Object.entries(uploadedMeta).forEach(([id, meta]) => map.set(id, meta));
     return map;
   }, [documents, uploadedMeta]);
@@ -105,7 +110,9 @@ export default function WorkspaceFolderPage({ params }: WorkspaceFolderPageProps
     isPrimary: false,
   }));
 
-  const availableDocuments = documents.filter((doc) => !documentIds.includes(doc._id));
+  const availableDocuments = documents.filter(
+    (doc) => doc.mlDocumentId && !documentIds.includes(doc.mlDocumentId),
+  );
 
   const refreshFolder = () => {
     setFolder(getFolder(folderId) ?? null);

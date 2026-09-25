@@ -28,9 +28,10 @@ export function Footer() {
           <span className="font-mono-citation text-mono-citation text-text-muted">
             &copy; {currentYear} Ministry of Coal, Government of India. Authorised Personnel Only.
           </span>
-          {/* TODO: replace "#" with the real GitHub repository URL once known */}
           <a
-            href="#"
+            href="https://github.com/DINESHYDK/SIH_26023"
+            target="_blank"
+            rel="noopener noreferrer"
             className="font-mono-citation text-mono-citation text-mining-gold-bright hover:underline"
           >
             GitHub
