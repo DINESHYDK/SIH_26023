@@ -164,6 +164,21 @@ The response also contains any top-level fields returned by the ML service (spre
 
 ---
 
+### 5a. Multi-file upload
+
+Same endpoint. Send **repeated `files` fields** (max 10 per request; the legacy single `file` field still works and keeps the response above). With 2+ files the response is:
+
+```json
+{ "message": "1 of 2 documents processed", "total": 2, "processed": 1, "failed": 1,
+  "documents": [
+    { "fileName": "a.pdf", "size": 1, "documentId": "665f…", "status": "processed", "document": { }, "report": { } },
+    { "fileName": "b.pdf", "size": 1, "documentId": "665f…", "status": "failed", "error": "…" } ] }
+```
+
+Per-file `status`: `processed` | `failed` | `rate_limited` | `demo` (ML offline; the top level also has `offline: true`). `report` is present only when `processed` or `demo`. The HTTP status is `200` even when some files failed. More than 10 files, a bad type or an oversize file rejects the whole request (`400`/`413`).
+
+---
+
 ## 6. Document List / Sidebar API
 
 `GET /api/v1/documents` — **Bearer required.** No query parameters, no pagination.
@@ -179,6 +194,26 @@ Returns only the **authenticated user's** documents, newest first (`uploadedAt` 
 ```
 
 Note `wordCloud` (camelCase capital C) here vs `wordcloud` in the upload `report`. Guest uploads never appear in this list.
+
+---
+
+### 6a. Delete a document
+
+`DELETE /api/v1/documents/:id` — Bearer required, owner only. `200` `{ "success": true, "message": "Document deleted.", "id": "…" }`; errors `{ "success": false, "error": "…" }`: `400` bad id, `403` not owner, `404` not found. The document is also removed from any of the user's folders.
+
+### 6b. Folders
+
+All require Bearer and only ever touch the caller's own folders. Folder object: `{ _id, userId, name, documentIds: [...], createdAt, updatedAt }`.
+
+| Method | Endpoint | Body | Response |
+|---|---|---|---|
+| GET | `/api/v1/folders` | – | `{ success, count, folders }` (`documentIds` are plain ids) |
+| POST | `/api/v1/folders` | `{ name }` (1–100 chars) | `201` `{ success, folder }` |
+| GET | `/api/v1/folders/:id` | – | `{ success, folder }` with `documentIds` populated as document objects |
+| PATCH | `/api/v1/folders/:id` | `{ name?, addDocumentIds?, removeDocumentIds? }` (at least one; id arrays of ≤200) | `{ success, folder }` (populated) |
+| DELETE | `/api/v1/folders/:id` | – | `{ success, message }` — deletes the folder only, never its documents |
+
+Errors: `{ "success": false, "error": "…" }` with `400` (validation / bad id), `401`, `403` (not owner), `404` (folder, or a document to add that doesn't exist / isn't yours).
 
 ---
 
@@ -332,13 +367,16 @@ GET /reports/:documentId/export-pdf  →  download docket
 | POST | `/api/v1/auth/logout` | Bearer | Client-side logout hint |
 | POST | `/api/v1/documents/upload` | Optional | Upload + ML analysis |
 | GET | `/api/v1/documents` | Bearer | User's documents (sidebar) |
+| DELETE | `/api/v1/documents/:id` | Bearer | Delete an owned document |
+| GET / POST | `/api/v1/folders` | Bearer | List / create folders |
+| GET / PATCH / DELETE | `/api/v1/folders/:id` | Bearer | Get / rename+add+remove docs / delete folder |
 | POST | `/api/v1/query` | Optional | Ask a question |
 | GET | `/api/v1/query/history` | Bearer | User's Q&A history |
 | GET | `/api/v1/reports/:id/export-pdf` | Bearer | Download PDF docket |
 | GET | `/api/v1/reports/mock` | – | Demo report data |
 | GET | `/api/health` | – | Health check |
 
-12 endpoints.
+18 endpoint/method combinations (12 original + delete document + 5 folder).
 
 ---
 

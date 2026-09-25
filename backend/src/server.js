@@ -8,6 +8,7 @@ const documentRoutes = require('./routes/documents');
 const reportRoutes = require('./routes/reports');
 const queryRoutes = require('./routes/query');
 const authRoutes = require('./routes/auth');
+const folderRoutes = require('./routes/folders');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -28,6 +29,7 @@ app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/documents', documentRoutes);
 app.use('/api/v1/reports', reportRoutes);
 app.use('/api/v1/query', queryRoutes);
+app.use('/api/v1/folders', folderRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

@@ -4,7 +4,27 @@ Written from the frontend side (Workspace redesign added a folder/notebook UI
 that's currently client-side-only). Verified against the actual current code
 in this repo before writing — not carried over unchanged from an older draft.
 
-## 1. Folder model + endpoints — still needed
+## Status
+
+- [x] 1. Folder model + endpoints — done and tested (`tests/folders.test.js`)
+- [x] 2. Document deletion — done and tested
+- [x] 3. Multi-file upload (Node layer) — done and tested with a mocked ML service.
+  **Blocked for real end-to-end use on an ML-side bug** (outside `backend/`): in
+  `ml_service/main.py` the `file` parameter is commented out but line 84 still
+  references it (`uploads = ([file] if file is not None else []) + files`), so
+  `/process-document` raises `NameError` until `file` is restored or that line is fixed.
+
+Implementation notes:
+- Folders: `PATCH /api/v1/folders/:id` takes `{ name?, addDocumentIds?, removeDocumentIds? }`
+  (at least one). Only the user's own documents can be added. Responses use
+  `{ success, folder | folders }`; errors use `{ success: false, error }`.
+- Deletion: `DELETE /api/v1/documents/:id` → `{ success, message, id }`; also `$pull`s the id
+  from the user's folders.
+- Upload: route accepts legacy `file` and/or repeated `files` (max 10 per request); the
+  outgoing ML request always uses repeated `files` fields. A single file returns the
+  unchanged response; 2+ files return `{ message, total, processed, failed, documents: [...] }`.
+
+## 1. Folder model + endpoints — DONE
 
 No grouping model exists. `Document` (`backend/src/models/Document.js`) has no
 `folderId`/`notebookId` field, and there's no `Folder` model. As an interim
@@ -38,7 +58,7 @@ the folder's `userId` on every read/write):
 Once live, `frontend/src/lib/folders.ts` swaps its localStorage calls for real
 API calls — the rest of the UI shouldn't need to change.
 
-## 2. Document deletion — still needed
+## 2. Document deletion — DONE
 
 `DELETE /api/v1/documents/:id` doesn't exist anywhere in `backend/src/routes/documents.js`.
 Should verify ownership the same way `exportDocumentPDF` does
@@ -46,7 +66,7 @@ Should verify ownership the same way `exportDocumentPDF` does
 and actually remove the document (and pull its ID out of any `Folder.documentIds`
 arrays once folders exist).
 
-## 3. Multi-file upload — ML service is ready, Node layer is not
+## 3. Multi-file upload — Node layer DONE (ML `file` NameError still blocks real use)
 
 Good news: `ml_service/main.py`'s `/process-document` **already accepts a
 batch** (`files: Optional[list[UploadFile]] = File(None)`, alongside the
