@@ -31,7 +31,7 @@ const config: Config = {
         "surface-container-lowest": "#0a0e16",
         "mining-gold-deep": "#D97706",
         "on-primary-fixed": "#2a1700",
-        "primary-container": "#f59e0b",
+        "primary-container": "#EA8A0E",
         "on-secondary-fixed": "#002113",
         "state-critical": "#EF4444",
         surface: "#0f131c",

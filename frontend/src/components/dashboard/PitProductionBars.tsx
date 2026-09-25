@@ -30,6 +30,7 @@ export function PitProductionBars({ productionByPit, period }: PitProductionBars
         {productionByPit.map(({ pit, actualMT, targetMT }) => {
           const achievement = (actualMT / targetMT) * 100;
           const width = Math.min(100, (actualMT / maxProduction) * 100);
+          const targetPosition = Math.min(100, (targetMT / maxProduction) * 100);
 
           return (
             <div key={pit}>
@@ -45,14 +46,19 @@ export function PitProductionBars({ productionByPit, period }: PitProductionBars
                   {actualMT.toFixed(2)} / {targetMT.toFixed(2)} MT ({achievement.toFixed(1)}%)
                 </span>
               </div>
-              <div className="h-2.5 overflow-hidden rounded-full bg-surface-dim">
+              <div className="relative h-2.5 rounded-full bg-surface-dim">
                 <div
                   className={
                     achievement >= 100
                       ? "h-full rounded-full bg-govtech-emerald transition-all duration-500"
-                      : "h-full rounded-full bg-mining-gold-bright transition-all duration-500"
+                      : "h-full rounded-full bg-state-warning transition-all duration-500"
                   }
                   style={{ width: `${width}%` }}
+                />
+                <div
+                  className="absolute top-1/2 h-4 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-text-primary/70"
+                  style={{ left: `${targetPosition}%` }}
+                  title={`Target: ${targetMT.toFixed(2)} MT`}
                 />
               </div>
             </div>

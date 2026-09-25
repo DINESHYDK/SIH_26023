@@ -7,15 +7,54 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/AuthProvider";
 
 const navItems = [
-  { label: "Overview / Portal", href: "/" },
-  { label: "Intelligence Workspace", href: "/dashboard" },
-  { label: "Statutory Briefs & Reports", href: "/reports" },
+  { label: "Home", href: "/" },
+  { label: "Workspace", href: "/dashboard" },
+  { label: "Reports", href: "/reports" },
 ];
 
 export function Header() {
   const pathname = usePathname();
   const router = useRouter();
   const { isAuthenticated, isReady, signOut, user } = useAuth();
+
+  // Marketing chrome (landing + login): logo and a single CTA only, no app nav.
+  // TEST BUILD — see UI_UX_REVIEW.md section 1. Full landing redesign still pending.
+  const isMarketingRoute = pathname === "/" || pathname === "/login";
+
+  if (isMarketingRoute) {
+    return (
+      <header className="fixed top-0 left-0 right-0 w-full z-50 bg-surface-base/95 backdrop-blur-xl border-b border-border-crisp">
+        <div className="h-16 w-full px-space-xl flex items-center justify-between gap-space-md">
+          <Link href="/" className="flex items-center gap-space-sm">
+            <div className="w-8 h-8 rounded-lg bg-primary-container flex items-center justify-center">
+              <span className="material-symbols-outlined text-surface-base text-[18px]">
+                terrain
+              </span>
+            </div>
+            <span className="font-headline-md text-headline-md font-bold tracking-tight text-text-primary">
+              CMPDI GeoReport AI
+            </span>
+          </Link>
+
+          {isAuthenticated ? (
+            <Link
+              href="/dashboard"
+              className="rounded-lg bg-primary-container px-space-base py-2 font-body-sm font-semibold text-surface-base hover:bg-mining-gold-deep transition-colors"
+            >
+              Go to Workspace
+            </Link>
+          ) : (
+            <Link
+              href="/login"
+              className="rounded-lg border border-primary-container px-space-base py-2 font-body-sm font-semibold text-mining-gold-bright hover:bg-surface-card"
+            >
+              Sign in
+            </Link>
+          )}
+        </div>
+      </header>
+    );
+  }
 
   return (
     <header className="fixed top-0 left-0 right-0 w-full z-50 bg-surface-base/95 backdrop-blur-xl border-b border-border-crisp">
