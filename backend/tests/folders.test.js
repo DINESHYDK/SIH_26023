@@ -197,6 +197,25 @@ describe('POST /api/v1/documents/upload (multi-file)', () => {
     ]);
   });
 
+  it('persists the ML document_id as mlDocumentId (batch) and exposes it in GET /documents', async () => {
+    axios.post.mockResolvedValueOnce({ data: {
+      ...batchResponse,
+      documents: [{ ...batchResponse.documents[0], result: { summary: 'S1', document_id: 'abcdef0123456789' } }, ...batchResponse.documents.slice(1)],
+    } });
+    await attachThree(request(app).post('/api/v1/documents/upload').set(auth(token1)));
+
+    const list = await request(app).get('/api/v1/documents').set(auth(token1));
+    const byName = Object.fromEntries(list.body.documents.map(d => [d.fileName, d.mlDocumentId]));
+    expect(byName).toEqual({ 'one.pdf': 'abcdef0123456789', 'two.pdf': null, 'three.pdf': null });
+  });
+
+  it('persists the ML document_id as mlDocumentId for a single upload', async () => {
+    axios.post.mockResolvedValueOnce({ data: { summary: 's', document_id: '0123456789abcdef' } });
+    const res = await request(app).post('/api/v1/documents/upload').set(auth(token1)).attach('file', pdf, 'solo.pdf');
+    const doc = await Document.findById(res.body.documentId);
+    expect(doc.mlDocumentId).toBe('0123456789abcdef');
+  });
+
   it('still accepts the legacy single `file` field with the unchanged response shape', async () => {
     axios.post.mockResolvedValueOnce({ data: { summary: 'only one' } });
     const res = await request(app).post('/api/v1/documents/upload').set(auth(token1)).attach('file', pdf, 'solo.pdf');

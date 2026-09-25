@@ -9,10 +9,12 @@ in this repo before writing — not carried over unchanged from an older draft.
 - [x] 1. Folder model + endpoints — done and tested (`tests/folders.test.js`)
 - [x] 2. Document deletion — done and tested
 - [x] 3. Multi-file upload (Node layer) — done and tested with a mocked ML service.
-  **Blocked for real end-to-end use on an ML-side bug** (outside `backend/`): in
-  `ml_service/main.py` the `file` parameter is commented out but line 84 still
-  references it (`uploads = ([file] if file is not None else []) + files`), so
-  `/process-document` raises `NameError` until `file` is restored or that line is fixed.
+  The earlier ML-side blocker (commented-out `file` parameter causing a `NameError`)
+  is resolved upstream: `ml_service/main.py` declares `file: Optional[UploadFile]` again.
+- [x] 4. `mlDocumentId` persistence — done and tested. The upstream fix conflicted with the
+  multi-file upload code; resolved by moving the assignment into the shared `markCompleted`
+  helper, so **both single and batch uploads** now persist it (the upstream version only
+  covered single uploads).
 
 Implementation notes:
 - Folders: `PATCH /api/v1/folders/:id` takes `{ name?, addDocumentIds?, removeDocumentIds? }`
@@ -88,7 +90,7 @@ the ML service's new batch parameter. Until this lands, the frontend works
 around it by calling the existing single-file endpoint once per file,
 sequentially.
 
-## 4. Fixed already (this change is in the working tree, not yet merged) — two document ID systems were being conflated
+## 4. DONE — two document ID systems were being conflated
 
 Found while wiring up the frontend's folder Q&A: the ML service assigns each
 document its own content-hash id (16 hex chars — see `typed_rag.py`/`scanned_rag.py`,
@@ -117,3 +119,17 @@ No backfill was attempted (there's no way to recover the ML id after the fact
 without re-running ingestion). If you want a backfill path instead of relying
 on re-upload, that'd need a one-off script calling the ML service again per
 old document — not done here.
+
+**Completion notes (backend):**
+- Merged with the multi-file upload work: `mlDocumentId` is set in `markCompleted`
+  (`documentController.js`), which both the single-file and batch paths call. In a batch,
+  each file's id comes from its own `documents[i].result.document_id`. Failed/rate-limited
+  files keep `mlDocumentId: null`.
+- Only a non-empty string `document_id` is stored; nothing is fabricated when ML omits it.
+- Tests: `tests/folders.test.js` covers single upload persistence and batch persistence +
+  exposure via `GET /api/v1/documents` (55/55 tests pass).
+- **Heads-up for the folder API swap:** backend `Folder.documentIds` stores Mongo `_id`s
+  (ownership is checked against `Document`), while the client-side folders in
+  `frontend/src/lib/folders.ts` store `mlDocumentId`s. When the frontend switches to
+  `/api/v1/folders`, it must send `_id`s to `PATCH` and map to `mlDocumentId` (from the
+  populated documents in `GET /api/v1/folders/:id`) when building `context_doc`.

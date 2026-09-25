@@ -193,6 +193,8 @@ Returns only the **authenticated user's** documents, newest first (`uploadedAt` 
 ] }
 ```
 
+Each document also has `mlDocumentId`: the ML service's 16-hex-char id, **the id `/query`'s `context_doc` requires** (not `_id`). It is `null` for failed uploads and for documents uploaded before this field existed (re-upload to get one).
+
 Note `wordCloud` (camelCase capital C) here vs `wordcloud` in the upload `report`. Guest uploads never appear in this list.
 
 ---
