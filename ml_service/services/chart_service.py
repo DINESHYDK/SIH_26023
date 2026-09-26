@@ -16,4 +16,10 @@ def build_chart_data(statistics: list[dict[str, Any]]) -> list[dict[str, Any]]:
         elif metric == "uploads_by_day":
             charts.append({"type": "line", "title": "Upload trend", "x_axis": "date",
                            "y_axis": "documents", "metric": metric, "data": data})
+        elif metric == "subject_marks":
+            charts.append({"type": "bar", "title": "Marks by subject", "x_axis": "subject",
+                           "y_axis": "marks", "metric": metric, "data": data})
+        elif metric == "grade_distribution":
+            charts.append({"type": "bar", "title": "Grade distribution", "x_axis": "grade",
+                           "y_axis": "subjects", "metric": metric, "data": data})
     return charts

@@ -8,12 +8,12 @@ from typing import Any, TypedDict
 
 from langchain_openrouter import ChatOpenRouter
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agents.document_catalog import get_documents, get_documents_in_range
 from agents.scanned_rag import scanned_document_rag
 from agents.typed_rag import typed_document_rag
-from services.analytics_service import calculate_document_analytics
+from services.analytics_service import calculate_content_analytics, calculate_document_analytics
 from services.chart_service import build_chart_data
 from services.report_generator import generate_pdf
 
@@ -22,6 +22,8 @@ class ReportState(TypedDict, total=False):
     request: dict[str, Any]
     document_ids: list[str]
     documents: list[dict[str, Any]]
+    document_contents: list[dict[str, Any]]
+    content_analysis: dict[str, Any]
     analysis_plan: dict[str, Any]
     statistics: list[dict[str, Any]]
     evidence: list[dict[str, Any]]
@@ -36,6 +38,23 @@ class AnalysisPlan(BaseModel):
     analyses: list[str]
 
 
+class GradeRecord(BaseModel):
+    subject: str
+    marks_obtained: float | None = None
+    maximum_marks: float | None = None
+    grade: str | None = None
+    page: int
+
+
+class ContentAnalysis(BaseModel):
+    title: str
+    executive_summary: str
+    findings: list[str] = Field(default_factory=list)
+    extracted_facts: list[str] = Field(default_factory=list)
+    grade_records: list[GradeRecord] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
 def _resolve_documents(state: ReportState) -> ReportState:
     request = state["request"]
     ids = request.get("file_ids") or []
@@ -46,6 +65,89 @@ def _resolve_documents(state: ReportState) -> ReportState:
     if unavailable:
         raise ValueError("Documents are still processing: " + ", ".join(unavailable))
     return {"document_ids": [item["document_id"] for item in documents], "documents": documents}
+
+
+def _load_document_content(state: ReportState) -> ReportState:
+    """Load selected content directly; reports must never start from metadata."""
+    documents = []
+    for document in state["documents"]:
+        if document["document_type"] == "typed":
+            pages = [{"page": chunk["page"], "text": chunk["text"]}
+                     for chunk in typed_document_rag.read_chunks(document["document_id"])]
+        else:
+            cache = scanned_document_rag._paths(document["document_id"])["cache"]
+            pages = []
+            for page_file in sorted(cache.glob("page_*.json")):
+                try:
+                    raw = json.loads(page_file.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if isinstance(raw, dict):
+                    text = json.dumps({key: value for key, value in raw.items()
+                                       if key not in {"image_base64", "image_mime_type"}}, ensure_ascii=False)
+                    pages.append({"page": raw.get("page_number", len(pages) + 1), "text": text})
+        if not pages:
+            raise ValueError(f"No extracted content is available for {document['filename']}; reprocess it before reporting.")
+        documents.append({"document_id": document["document_id"], "filename": document["filename"], "pages": pages})
+    return {"document_contents": documents}
+
+
+def _content_model() -> ChatOpenRouter:
+    api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPEN_ROUTER_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is required for content-based report generation")
+    return ChatOpenRouter(model=os.getenv("OPENROUTER_MODEL", "openrouter/auto"), api_key=api_key, temperature=0.1)
+
+
+def _analyse_document_content(state: ReportState) -> ReportState:
+    """Use the LLM only after supplying actual extracted page text and citations."""
+    remaining = 50_000
+    context = []
+    for document in state["document_contents"]:
+        for page in document["pages"]:
+            fragment = f"[{document['document_id']} p{page['page']}] {page['text']}\n"
+            context.append(fragment[:remaining])
+            remaining -= len(fragment)
+            if remaining <= 0:
+                break
+        if remaining <= 0:
+            break
+    if not context:
+        raise ValueError("No usable document text was available for analysis")
+    instruction = state["request"].get("instruction") or "Provide a factual analysis of these documents."
+    prompt = f'''Analyse only this document content for the user's request: {instruction}
+Return JSON only: {{"title":"...","executive_summary":"...","findings":["..."],"extracted_facts":["..."],"grade_records":[{{"subject":"...","marks_obtained":number-or-null,"maximum_marks":number-or-null,"grade":"..."-or-null,"page":number}}],"limitations":["..."]}}.
+For a gradesheet, extract every explicit subject/marks/maximum/grade row. Do not calculate or invent values. Every fact and finding must cite [document_id pN]. Use null for unclear cells.
+Document content:
+{''.join(context)}'''
+    try:
+        response = _content_model().invoke(prompt)
+        value = str(response.content).strip()
+        if value.startswith("```"):
+            value = value.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        parsed = json.loads(value)
+        analysis = ContentAnalysis.model_validate(parsed) if hasattr(ContentAnalysis, "model_validate") else ContentAnalysis.parse_obj(parsed)
+    except Exception as exc:
+        raise RuntimeError(f"Content analysis failed: {exc}") from exc
+    return {"content_analysis": analysis.model_dump() if hasattr(analysis, "model_dump") else analysis.dict()}
+
+
+def _execute_content_analytics(state: ReportState) -> ReportState:
+    return {"statistics": calculate_content_analytics(state["content_analysis"]["grade_records"])}
+
+
+def _compose_content_report(state: ReportState) -> ReportState:
+    analysis = state["content_analysis"]
+    metrics = [f"{item['metric']}: {item['value']}" for item in state["statistics"] if "value" in item]
+    report = {"title": analysis["title"], "summary": analysis["executive_summary"], "sections": [
+        {"title": "Analytical findings", "content": " ".join(analysis["findings"]) or "No grounded findings were returned."},
+        {"title": "Document-derived facts", "content": " ".join(analysis["extracted_facts"]) or "No additional facts were extracted."},
+        {"title": "Computed grade metrics", "content": "; ".join(metrics) or "No numeric grade rows were explicitly extractable."},
+    ], "findings": [{"finding": finding, "severity": "content", "supporting_metrics": [], "evidence": []} for finding in analysis["findings"]],
+        "grade_records": analysis["grade_records"], "statistics": state["statistics"], "charts": state["charts"],
+        "sources": [{"document_id": item["document_id"], "filename": item["filename"]} for item in state["documents"]],
+        "limitations": " ".join(analysis["limitations"] or ["Analysis is limited to extracted document content."])}
+    return {"report": report}
 
 
 def _plan_analysis(state: ReportState) -> ReportState:
@@ -149,10 +251,10 @@ def _generate_file(state: ReportState) -> ReportState:
 
 
 _builder = StateGraph(ReportState)
-for name, fn in [("resolve_documents", _resolve_documents), ("plan_analysis", _plan_analysis), ("execute_analytics", _execute_analytics), ("retrieve_supporting_evidence", _retrieve_evidence), ("interpret_findings", _interpret_findings), ("build_chart_data", _build_charts), ("compose_report", _compose_report), ("generate_report_file", _generate_file)]:
+for name, fn in [("resolve_documents", _resolve_documents), ("load_document_content", _load_document_content), ("analyse_document_content", _analyse_document_content), ("execute_content_analytics", _execute_content_analytics), ("build_chart_data", _build_charts), ("compose_content_report", _compose_content_report), ("generate_report_file", _generate_file)]:
     _builder.add_node(name, fn)
 _builder.add_edge(START, "resolve_documents")
-for left, right in zip(["resolve_documents", "plan_analysis", "execute_analytics", "retrieve_supporting_evidence", "interpret_findings", "build_chart_data", "compose_report"], ["plan_analysis", "execute_analytics", "retrieve_supporting_evidence", "interpret_findings", "build_chart_data", "compose_report", "generate_report_file"]):
+for left, right in zip(["resolve_documents", "load_document_content", "analyse_document_content", "execute_content_analytics", "build_chart_data", "compose_content_report"], ["load_document_content", "analyse_document_content", "execute_content_analytics", "build_chart_data", "compose_content_report", "generate_report_file"]):
     _builder.add_edge(left, right)
 _builder.add_edge("generate_report_file", END)
 report_graph = _builder.compile()

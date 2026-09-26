@@ -99,6 +99,14 @@ class TypedDocumentRAG:
         return [{**chunks[position], "score": float(score)}
                 for score, position in zip(scores[0], positions[0]) if position >= 0]
 
+    def read_chunks(self, document_id: str) -> list[dict]:
+        """Load persisted text for a report; no semantic filtering is applied."""
+        paths = self._paths(document_id)
+        if not paths["chunks"].exists():
+            raise FileNotFoundError("Typed document is not indexed. Upload it before reporting.")
+        with paths["chunks"].open("rb") as handle:
+            return pickle.load(handle)
+
     def exists(self, document_id: str) -> bool:
         paths = self._paths(document_id)
         return paths["index"].exists() and paths["chunks"].exists()

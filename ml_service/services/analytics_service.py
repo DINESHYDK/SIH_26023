@@ -16,3 +16,20 @@ def calculate_document_analytics(documents: list[dict[str, Any]]) -> list[dict[s
     if pages:
         result.append({"metric": "page_statistics", "value": {"total": sum(pages), "average": round(sum(pages) / len(pages), 2), "known_documents": len(pages)}, "data": []})
     return result
+
+
+def calculate_content_analytics(grade_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Calculate grade metrics only from values extracted from cited document text."""
+    valid = [record for record in grade_records if isinstance(record.get("marks_obtained"), (int, float))]
+    results: list[dict[str, Any]] = []
+    if valid:
+        marks = [float(record["marks_obtained"]) for record in valid]
+        results.append({"metric": "marks_summary", "value": {"total": round(sum(marks), 2), "average": round(sum(marks) / len(marks), 2), "highest": round(max(marks), 2), "lowest": round(min(marks), 2)}, "data": []})
+        results.append({"metric": "subject_marks", "data": [{"subject": str(record.get("subject") or "Unlabelled"), "value": float(record["marks_obtained"])} for record in valid]})
+        maximum = [float(record["maximum_marks"]) for record in valid if isinstance(record.get("maximum_marks"), (int, float))]
+        if len(maximum) == len(valid) and sum(maximum) > 0:
+            results.append({"metric": "percentage", "value": round(sum(marks) * 100 / sum(maximum), 2), "data": []})
+    grades = Counter(str(record["grade"]) for record in grade_records if record.get("grade"))
+    if grades:
+        results.append({"metric": "grade_distribution", "data": [{"grade": key, "value": value} for key, value in sorted(grades.items())]})
+    return results
