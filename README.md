@@ -49,33 +49,43 @@ new_SIH/
 
 ## 3. Quick Start (Running All 3 Services)
 
-### A. Frontend (Next.js 14) — Port 3000
+**You need:** Node.js 18+, Python 3.10+, and MongoDB (local on `127.0.0.1:27017`, or a MongoDB Atlas URL).
+**API keys:** an [OpenRouter key](https://openrouter.ai/keys) (answers questions) and a [Gemini key](https://aistudio.google.com/apikey) (OCR for scanned PDFs).
+
+`.env` files are git-ignored, so every clone must create its own from the `.env.example` files. Start the services in this order (ML → backend → frontend), each in its own terminal.
+
+### A. ML Service (FastAPI + Uvicorn) — Port 8000
 ```bash
-cd frontend
-npm install
-cp .env.example .env.local   # set NEXT_PUBLIC_API_BASE_URL if not using the default
-npm run dev
+cd ml_service
+python -m venv venv
+# Windows: venv\Scripts\activate | Linux/macOS: source venv/bin/activate
+pip install -r requirements.txt   # large (torch); first install takes several minutes
+cp .env.example .env              # set OPENROUTER_API_KEY and GEMINI_API_KEY
+uvicorn main:app --port 8000 --reload
 ```
-Accessible at: [http://localhost:3000](http://localhost:3000)
+Run it from inside `ml_service/`. Accessible at: [http://localhost:8000](http://localhost:8000) · Docs: `/docs` · Health: `/health`
 
 ### B. Backend API Gateway (Express.js) — Port 5000
 ```bash
 cd backend
 npm install
-cp .env.example .env   # fill in MONGO_URI, JWT_SECRET, GOOGLE_CLIENT_ID
+cp .env.example .env   # set MONGO_URI and JWT_SECRET (GOOGLE_CLIENT_ID only for Google login)
 npm run dev
 ```
 Accessible at: [http://localhost:5000](http://localhost:5000) · Health check: `/api/health`
 
-### C. ML Service (FastAPI + Uvicorn) — Port 8000
+### C. Frontend (Next.js 14) — Port 3000
 ```bash
-cd ml_service
-python -m venv venv
-# Windows: venv\Scripts\activate | Linux/macOS: source venv/bin/activate
-pip install -r requirements.txt
-uvicorn main:app --port 8000 --reload
+cd frontend
+npm install
+echo "NEXT_PUBLIC_API_BASE_URL=http://localhost:5000" > .env.local
+npm run dev
 ```
-Accessible at: [http://localhost:8000](http://localhost:8000) · Docs: `/docs` · Health: `/health`
+`.env.example` points at the deployed Render backend; `.env.local` overrides it so the frontend talks to your local backend. Restart `npm run dev` after changing it.
+Accessible at: [http://localhost:3000](http://localhost:3000)
+
+### D. Try it with real documents
+`Testing/` holds public coal-sector PDFs (Ministry of Coal, CMPDI, DGMS). `Testing/TEST_QUESTIONS.md` lists questions with expected answers; `dgmscircular3_27082024.pdf` is a scanned PDF that exercises the OCR path.
 
 ---
 
@@ -141,8 +151,11 @@ GOOGLE_CLIENT_ID=your_google_client_id_here
 
 ### ML Service (`ml_service/.env.example` → `ml_service/.env`)
 ```env
-GEMINI_API_KEY=your_gemini_api_key_here
+OPENROUTER_API_KEY=your_openrouter_api_key_here   # required: answer generation
+GEMINI_API_KEY=your_gemini_api_key_here           # required for scanned-PDF OCR
 GEMINI_MODEL=gemini-2.5-flash
+GEMINI_RPM=8                                      # match your Gemini quota; OCR and
+GEMINI_RPD=20                                     # answers share this limiter
 PORT=8000
 ```
 
