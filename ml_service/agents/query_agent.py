@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator, TypedDict
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openrouter import ChatOpenRouter
+from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, StateGraph
 
 from agents.scanned_rag import scanned_document_rag
@@ -100,7 +101,7 @@ def _prepare_prompt(state: QueryState) -> QueryState:
 
 
 def _model() -> ChatGoogleGenerativeAI:
-    api_key = os.getenv("OPEN_ROUTER_API_KEY") #or os.getenv("GOOGLE_API_KEY")
+    api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPEN_ROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("Set API_KEY (or GOOGLE_API_KEY) before generating answers")
     # return ChatGoogleGenerativeAI(
@@ -157,7 +158,22 @@ async def stream_document_answer(query: str, context_doc: str | list[str] | None
     # it in the shared synchronous limiter without blocking FastAPI's loop.
     await asyncio.to_thread(gemini_rate_limiter.acquire)
     emitted_text = False
-    async for chunk in _model().astream(result["prompt"]):
+    content: list[dict[str, Any]] = [{"type": "text", "text": result["prompt"]}]
+    # Vision pages travel as native image parts only for retrieved scanned
+    # pages. Base64 stays in persisted page JSON and is never echoed to users.
+    seen_images: set[tuple[str, int]] = set()
+    for context in result["contexts"]:
+        document_id = context["id"].split(":", 1)[0]
+        if result["document_types"].get(document_id) != "scanned":
+            continue
+        key = (document_id, context["page"])
+        if key in seen_images:
+            continue
+        seen_images.add(key)
+        image_url = scanned_document_rag.page_image_data_url(*key)
+        if image_url:
+            content.append({"type": "image_url", "image_url": {"url": image_url}})
+    async for chunk in _model().astream([HumanMessage(content=content)]):
         token = _token_text(chunk.content)
         if token:
             emitted_text = True

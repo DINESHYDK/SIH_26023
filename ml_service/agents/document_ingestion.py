@@ -5,6 +5,7 @@ import fitz
 
 from agents.scanned_rag import scanned_document_rag
 from agents.typed_rag import typed_document_rag
+from agents.document_catalog import record_document
 
 
 def is_typed_pdf(content: bytes) -> bool:
@@ -44,6 +45,6 @@ def ingest_pdf(filename: str, content: bytes) -> dict:
     if not filename.lower().endswith(".pdf"):
         raise ValueError("Only PDF uploads are supported")
     if is_typed_pdf(content):
-        return typed_document_rag.ingest(filename, content)
+        return record_document(typed_document_rag.ingest(filename, content))
     result = scanned_document_rag.ingest(filename, content)
-    return {**result, "document_type": "scanned"}
+    return record_document({**result, "document_type": "scanned"})

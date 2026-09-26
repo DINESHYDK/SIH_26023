@@ -1,0 +1,47 @@
+{
+  "page_number": 18,
+  "section_heading": "Milestones of MoSPI Monitored Projects for MoU 2019-20 (MoU Parameters)",
+  "narrative_text": "",
+  "tables": [
+    {
+      "table_id": "mospi_milestones_p1",
+      "caption": "Milestones of MoSPI Monitored Projects for MoU 2019-20",
+      "columns": [
+        "Subsidiary",
+        "Project",
+        "Capacity (Mty)",
+        "Milestone",
+        "Total Sanctioned Capital (Rs Crs)",
+        "Timeline for Completion"
+      ],
+      "rows": [
+        {
+          "Subsidiary": "WCL",
+          "Project": "Penganga OC",
+          "Capacity (Mty)": "4.00",
+          "Milestone": "Vacation of 100 houses of Wirur village under R&R activity",
+          "Total Sanctioned Capital (Rs Crs)": "441.82",
+          "Timeline for Completion": "Mar-20"
+        },
+        {
+          "Subsidiary": "WCL",
+          "Project": "Dinesh OC",
+          "Capacity (Mty)": "4.00",
+          "Milestone": "Achieving Production target of 3.5MTPA",
+          "Total Sanctioned Capital (Rs Crs)": "611.16",
+          "Timeline for Completion": "Mar-20"
+        },
+        {
+          "Subsidiary": "WCL",
+          "Project": "Singhori OC",
+          "Capacity (Mty)": "0.85",
+          "Milestone": "Submission of Form I for expansion in production capacity by 40% i.e. from 0.80 MTPA to 1.12 MTPA",
+          "Total Sanctioned Capital (Rs Crs)": "205.49",
+          "Timeline for Completion": "Jan-20"
+        }
+      ],
+      "notes": null
+    }
+  ],
+  "signatories": []
+}
