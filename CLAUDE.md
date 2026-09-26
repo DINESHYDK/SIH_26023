@@ -67,6 +67,13 @@ series order is colour order. `ReportChartView.tsx` (screen) and
 order — change the contract, both renderers and the TS type together. New
 charts go through `normalize_chart`, never hand-built dicts.
 
+`/generate-report` takes **either** `file_ids` **or** `date_from`/`date_to`
+(local calendar days, not UTC) — both together is a 422. Each selected
+document is analysed in its own LLM call with its own budget
+(`REPORT_DOCUMENT_CHARS`; long documents send their most instruction-relevant
+pages), then merged. Never go back to one shared prompt: a single long
+document used to crowd every other document out of it.
+
 ## Query citations and scanned-page images
 
 ML `/query` streams the answer as plain text and sends its citations in the

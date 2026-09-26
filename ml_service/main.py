@@ -81,6 +81,10 @@ class ReportRequest(BaseModel):
     @root_validator(skip_on_failure=True)
     def validate_selection(cls, values):
         file_ids, date_from, date_to = values.get("file_ids"), values.get("date_from"), values.get("date_to")
+        # Exactly one selection mode: explicit documents, or every document
+        # uploaded in a date range. Mixing them used to silently drop the range.
+        if file_ids and (date_from or date_to):
+            raise ValueError("Provide either file_ids or date_from/date_to, not both")
         if not file_ids and not (date_from and date_to):
             raise ValueError("Provide file_ids or both date_from and date_to")
         if (date_from is None) != (date_to is None):
