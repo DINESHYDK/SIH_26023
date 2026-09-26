@@ -83,8 +83,16 @@ def _retrieve(state: QueryState) -> QueryState:
                             for chunk, score in result["results"][:per_document])
     if not contexts:
         raise ValueError("No retrievable content was found in the selected documents")
-    return {"contexts": contexts,
-            "citations": [{"page": item["page"], "source": item["id"]} for item in contexts]}
+    citations = []
+    for item in contexts:
+        document_id = item["id"].split(":", 1)[0]
+        citation = {"page": item["page"], "source": item["id"], "document_id": document_id,
+                    "document_type": state["document_types"][document_id]}
+        if citation["document_type"] == "scanned":
+            # Page JSON (with the Base64 image sent to Vision) for previews.
+            citation["page_url"] = f"/documents/{document_id}/pages/{item['page']}"
+        citations.append(citation)
+    return {"contexts": contexts, "citations": citations}
 
 
 def _prepare_prompt(state: QueryState) -> QueryState:
@@ -148,12 +156,23 @@ def _normalise_document_ids(context_doc: str | list[str] | None) -> list[str]:
     return list(dict.fromkeys(item.strip() for item in raw_ids if item and item.strip()))
 
 
+async def prepare_query(query: str, context_doc: str | list[str] | None = None) -> dict[str, Any]:
+    """Routing, retrieval and prompt only (no LLM call), so the API can send
+    citations before the answer starts streaming."""
+    return await query_graph.ainvoke({"question": query, "document_ids": _normalise_document_ids(context_doc)})
+
+
 async def stream_document_answer(query: str, context_doc: str | list[str] | None = None) -> AsyncIterator[str]:
     """Run the LangGraph RAG workflow and expose only answer tokens to FastAPI."""
+    async for token in stream_prepared_answer(await prepare_query(query, context_doc)):
+        yield token
+
+
+async def stream_prepared_answer(result: dict[str, Any]) -> AsyncIterator[str]:
+    """Stream the answer for a prepare_query() result."""
     # Do not use LangGraph's custom writer here: some async runtimes do not
     # propagate its runnable context. The graph owns routing/retrieval/prompt
     # preparation, while this direct provider stream reliably forwards tokens.
-    result = await query_graph.ainvoke({"question": query, "document_ids": _normalise_document_ids(context_doc)})
     # LangChain's streaming call eventually makes one Gemini request. Reserve
     # it in the shared synchronous limiter without blocking FastAPI's loop.
     await asyncio.to_thread(gemini_rate_limiter.acquire)

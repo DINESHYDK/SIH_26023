@@ -67,14 +67,22 @@ series order is colour order. `ReportChartView.tsx` (screen) and
 order — change the contract, both renderers and the TS type together. New
 charts go through `normalize_chart`, never hand-built dicts.
 
+## Query citations and scanned-page images
+
+ML `/query` streams the answer as plain text and sends its citations in the
+`X-Citations` response header (JSON list). `queryController.js` buffers the
+text into `{answer, citations}` and, for scanned-page citations, fetches
+`GET /documents/:mlId/pages/:page` from the ML service to attach
+`imageBase64`/`imageMimeType`; the chat shows them as "Reference Pages".
+Those images come from the per-batch Vision JSON written at ingestion
+(`storage/scanned_documents/<id>/extracted_pages/batches/`), i.e. exactly the
+images sent to Gemini. `QueryHistory` stores citations without the images.
+
 ## Known gaps (see `backend/TODO.md` for full detail)
 
 - No `POST /api/v1/reports/generate` endpoint yet — Reports' "Generate"
   button attempts it and falls back to `/reports/mock` demo data with an
   on-page banner when it fails.
-- Never confirmed whether `queryController.js` transforms the ML service's
-  streaming plain-text `/query` response into the `{answer, citations}` JSON
-  shape the frontend's chat UI expects.
 
 ## Working docs in this repo
 
