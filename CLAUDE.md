@@ -56,6 +56,17 @@ candidates not yet in the folder.
   cards) are hand-built. Don't add a charting dependency unless a genuinely
   new chart type is needed.
 
+## Report charts share one contract (ML → frontend → PDF)
+
+ML reports (`POST /generate-report` on the ML service) return `charts` and
+`kpis` in the shape defined in `ml_service/services/chart_service.py`
+(mirrored by `ReportChart`/`ReportKpi` in `frontend/src/lib/report-types.ts`).
+Every data row has a string `label` plus one number-or-null per series key;
+series order is colour order. `ReportChartView.tsx` (screen) and
+`services/report_generator.py` (PDF) both render it and use the same palette
+order — change the contract, both renderers and the TS type together. New
+charts go through `normalize_chart`, never hand-built dicts.
+
 ## Known gaps (see `backend/TODO.md` for full detail)
 
 - No `POST /api/v1/reports/generate` endpoint yet — Reports' "Generate"

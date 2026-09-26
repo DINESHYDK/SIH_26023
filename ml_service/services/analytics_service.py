@@ -25,11 +25,16 @@ def calculate_content_analytics(grade_records: list[dict[str, Any]]) -> list[dic
     if valid:
         marks = [float(record["marks_obtained"]) for record in valid]
         results.append({"metric": "marks_summary", "value": {"total": round(sum(marks), 2), "average": round(sum(marks) / len(marks), 2), "highest": round(max(marks), 2), "lowest": round(min(marks), 2)}, "data": []})
-        results.append({"metric": "subject_marks", "data": [{"subject": str(record.get("subject") or "Unlabelled"), "value": float(record["marks_obtained"])} for record in valid]})
+        results.append({"metric": "subject_marks", "data": [
+            {"subject": str(record.get("subject") or "Unlabelled"), "value": float(record["marks_obtained"]),
+             "maximum": float(record["maximum_marks"]) if isinstance(record.get("maximum_marks"), (int, float)) else None}
+            for record in valid]})
         maximum = [float(record["maximum_marks"]) for record in valid if isinstance(record.get("maximum_marks"), (int, float))]
         if len(maximum) == len(valid) and sum(maximum) > 0:
             results.append({"metric": "percentage", "value": round(sum(marks) * 100 / sum(maximum), 2), "data": []})
     grades = Counter(str(record["grade"]) for record in grade_records if record.get("grade"))
     if grades:
-        results.append({"metric": "grade_distribution", "data": [{"grade": key, "value": value} for key, value in sorted(grades.items())]})
+        # Rank order (A+, A, A-, B+, ...), not string order (A, A+, B, B+).
+        rank = lambda grade: (grade.rstrip("+-"), {"+": 0, "-": 2}.get(grade[-1:], 1))
+        results.append({"metric": "grade_distribution", "data": [{"grade": key, "value": value} for key, value in sorted(grades.items(), key=lambda item: rank(item[0]))]})
     return results

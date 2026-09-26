@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 from langchain_openrouter import ChatOpenRouter
 from langgraph.graph import END, START, StateGraph
@@ -14,7 +14,7 @@ from agents.document_catalog import get_documents, get_documents_in_range
 from agents.scanned_rag import scanned_document_rag
 from agents.typed_rag import typed_document_rag
 from services.analytics_service import calculate_content_analytics, calculate_document_analytics
-from services.chart_service import build_chart_data
+from services.chart_service import build_chart_data, build_dataset_charts, build_kpis, format_kpi
 from services.report_generator import generate_pdf
 
 
@@ -46,13 +46,50 @@ class GradeRecord(BaseModel):
     page: int
 
 
+class DatasetRow(BaseModel):
+    label: str
+    # Any: the model may emit "8.37" or "N/A"; chart_service coerces/drops.
+    values: list[Any] = Field(default_factory=list)
+    page: int | None = None
+
+
+class Dataset(BaseModel):
+    """Numeric table copied verbatim from the document, to be charted."""
+    title: str
+    chart_type: Literal["bar", "line"] = "bar"
+    x_label: str = ""
+    y_label: str = ""
+    series: list[str] = Field(default_factory=list)
+    rows: list[DatasetRow] = Field(default_factory=list)
+
+
 class ContentAnalysis(BaseModel):
     title: str
     executive_summary: str
     findings: list[str] = Field(default_factory=list)
     extracted_facts: list[str] = Field(default_factory=list)
     grade_records: list[GradeRecord] = Field(default_factory=list)
+    datasets: list[Dataset] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
+
+
+def _parse_json_object(text: str) -> dict[str, Any]:
+    """Pull the first JSON object out of an LLM reply.
+
+    openrouter/auto routes to a different model per call; some wrap the JSON
+    in prose or ``` fences, some return nothing. Plain json.loads fails on all
+    of those with "Expecting value: line 1 column 1".
+    """
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("model returned an empty response")
+    start = text.find("{")
+    if start == -1:
+        raise ValueError(f"no JSON object in model response: {text[:200]!r}")
+    parsed, _ = json.JSONDecoder().raw_decode(text[start:])
+    if not isinstance(parsed, dict):
+        raise ValueError("model response JSON is not an object")
+    return parsed
 
 
 def _resolve_documents(state: ReportState) -> ReportState:
@@ -116,19 +153,24 @@ def _analyse_document_content(state: ReportState) -> ReportState:
         raise ValueError("No usable document text was available for analysis")
     instruction = state["request"].get("instruction") or "Provide a factual analysis of these documents."
     prompt = f'''Analyse only this document content for the user's request: {instruction}
-Return JSON only: {{"title":"...","executive_summary":"...","findings":["..."],"extracted_facts":["..."],"grade_records":[{{"subject":"...","marks_obtained":number-or-null,"maximum_marks":number-or-null,"grade":"..."-or-null,"page":number}}],"limitations":["..."]}}.
+Return JSON only: {{"title":"...","executive_summary":"...","findings":["..."],"extracted_facts":["..."],"grade_records":[{{"subject":"...","marks_obtained":number-or-null,"maximum_marks":number-or-null,"grade":"..."-or-null,"page":number}}],"datasets":[{{"title":"...","chart_type":"bar"|"line","x_label":"...","y_label":"...","series":["..."],"rows":[{{"label":"...","values":[number-or-null],"page":number}}]}}],"limitations":["..."]}}.
 For a gradesheet, extract every explicit subject/marks/maximum/grade row. Do not calculate or invent values. Every fact and finding must cite [document_id pN]. Use null for unclear cells.
+"datasets" holds the numeric tables to chart. Whenever the request asks for a graph, chart, trend or comparison, or the document has a numeric table (per period, per item, per category), add a dataset: one row per x-axis value in document order, "values" in the same order as "series" (e.g. series ["SGPA","CGPA"], one row per semester). Copy numbers exactly as printed; never calculate them. Use "line" for values over time/periods, "bar" otherwise.
+Reply with the JSON object only: no prose, no markdown.
 Document content:
 {''.join(context)}'''
-    try:
-        response = _content_model().invoke(prompt)
-        value = str(response.content).strip()
-        if value.startswith("```"):
-            value = value.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        parsed = json.loads(value)
-        analysis = ContentAnalysis.model_validate(parsed) if hasattr(ContentAnalysis, "model_validate") else ContentAnalysis.parse_obj(parsed)
-    except Exception as exc:
-        raise RuntimeError(f"Content analysis failed: {exc}") from exc
+    errors = []
+    for attempt in range(2):
+        try:
+            response = _content_model().invoke(prompt if attempt == 0 else
+                                               prompt + "\n\nYour previous reply was not a valid JSON object. Reply with ONLY the JSON object.")
+            parsed = _parse_json_object(str(response.content))
+            analysis = ContentAnalysis.model_validate(parsed) if hasattr(ContentAnalysis, "model_validate") else ContentAnalysis.parse_obj(parsed)
+            break
+        except Exception as exc:
+            errors.append(str(exc))
+    else:
+        raise RuntimeError("Content analysis failed: " + " | ".join(errors))
     return {"content_analysis": analysis.model_dump() if hasattr(analysis, "model_dump") else analysis.dict()}
 
 
@@ -138,13 +180,14 @@ def _execute_content_analytics(state: ReportState) -> ReportState:
 
 def _compose_content_report(state: ReportState) -> ReportState:
     analysis = state["content_analysis"]
-    metrics = [f"{item['metric']}: {item['value']}" for item in state["statistics"] if "value" in item]
+    kpis = build_kpis(state["statistics"])
+    metrics = [f"{kpi['label']}: {format_kpi(kpi)}" for kpi in kpis]
     report = {"title": analysis["title"], "summary": analysis["executive_summary"], "sections": [
         {"title": "Analytical findings", "content": " ".join(analysis["findings"]) or "No grounded findings were returned."},
         {"title": "Document-derived facts", "content": " ".join(analysis["extracted_facts"]) or "No additional facts were extracted."},
         {"title": "Computed grade metrics", "content": "; ".join(metrics) or "No numeric grade rows were explicitly extractable."},
     ], "findings": [{"finding": finding, "severity": "content", "supporting_metrics": [], "evidence": []} for finding in analysis["findings"]],
-        "grade_records": analysis["grade_records"], "statistics": state["statistics"], "charts": state["charts"],
+        "grade_records": analysis["grade_records"], "statistics": state["statistics"], "kpis": kpis, "charts": state["charts"],
         "sources": [{"document_id": item["document_id"], "filename": item["filename"]} for item in state["documents"]],
         "limitations": " ".join(analysis["limitations"] or ["Analysis is limited to extracted document content."])}
     return {"report": report}
@@ -224,20 +267,19 @@ def _interpret_findings(state: ReportState) -> ReportState:
 
 
 def _build_charts(state: ReportState) -> ReportState:
-    return {"charts": build_chart_data(state["statistics"])}
+    datasets = (state.get("content_analysis") or {}).get("datasets") or []
+    return {"charts": build_dataset_charts(datasets) + build_chart_data(state["statistics"])}
 
 
 def _compose_report(state: ReportState) -> ReportState:
     title = state["analysis_plan"]["title"]
     summary = state["findings"][0]["finding"]
-    metric_lines = []
-    for metric in state["statistics"]:
-        if "value" in metric:
-            metric_lines.append(f"{metric['metric']}: {metric['value']}")
+    kpis = build_kpis(state["statistics"])
+    metric_lines = [f"{kpi['label']}: {format_kpi(kpi)}" for kpi in kpis]
     report = {"title": title, "summary": summary, "sections": [
         {"title": "Analytical findings", "content": " ".join(item["finding"] for item in state["findings"])},
         {"title": "Computed metrics", "content": "; ".join(metric_lines) or "No numeric metadata was available."},
-    ], "findings": state["findings"], "charts": state["charts"],
+    ], "findings": state["findings"], "kpis": kpis, "charts": state["charts"],
         "sources": [{"document_id": item["document_id"], "filename": item["filename"]} for item in state["documents"]],
         "limitations": "Metrics are calculated only from indexed upload metadata. Content-derived claims require retrievable document text."}
     return {"report": report}

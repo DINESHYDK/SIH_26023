@@ -166,3 +166,41 @@ export interface CurrentUserResponse {
   success: true;
   user: SafeUser;
 }
+
+/**
+ * Chart contract emitted by the ML report pipeline
+ * (`ml_service/services/chart_service.py`, version "1.0"). The same object is
+ * drawn in the PDF, so keep the two renderers in step when this changes.
+ *
+ * - Every `data` row has a string `label` (the x value) plus one numeric key
+ *   per entry in `series`; `null` means "not stated in the source" (a gap),
+ *   never zero.
+ * - Series order is colour order: slot N of the categorical palette always
+ *   goes to `series[N]`, on screen and in the PDF.
+ */
+export interface ReportChartSeries {
+  key: string;
+  label: string;
+}
+
+export interface ReportChart {
+  version: "1.0";
+  id: string;
+  metric: string;
+  type: "bar" | "line";
+  title: string;
+  description: string | null;
+  x_axis: { key: "label"; label: string; kind: "category" | "time" };
+  y_axis: { label: string; unit: string | null; min: number | null };
+  series: ReportChartSeries[];
+  data: Array<{ label: string } & Record<string, number | string | null>>;
+}
+
+/** Headline number derived from a scalar statistic (stat tile / PDF "Key figures"). */
+export interface ReportKpi {
+  id: string;
+  label: string;
+  value: number;
+  unit: string | null;
+  metric: string;
+}
