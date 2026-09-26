@@ -7,6 +7,7 @@ import type {
   FolderSummary,
   QueryResponse,
   ReportData,
+  ReportJob,
   UploadResponse,
 } from "@/lib/report-types";
 
@@ -184,29 +185,65 @@ export function getDocuments(token?: string): Promise<DocumentsListResponse> {
 }
 
 /**
- * Proposed contract for a report generated from a selection of documents and
- * an optional date range: `POST /api/v1/reports/generate` ->
- * `{ documentIds, startDate?, endDate? }` returning the same `ReportData`
- * shape as `getMockReport`. This backend endpoint does not exist yet (see
- * REDESIGN_PLAN.md section 3) — callers should expect this to fail/404 and
- * fall back to `getMockReport` in the meantime.
+ * Real report generation, proxied through the backend to the ML service's
+ * async pipeline (`POST /generate-report` -> `GET /reports/:id`). `fileIds`
+ * must be ML document ids (DocumentListItem.mlDocumentId), not Mongo _ids —
+ * the same requirement as /query's context_doc. Provide fileIds and/or a
+ * date range (the ML service requires at least one). Returns immediately
+ * with `{ report_id, status: "processing" }`; poll `getReportStatus` for
+ * the result.
  */
-export async function generateReport(
-  documentIds: string[],
-  startDate?: string,
-  endDate?: string,
+export function startReportGeneration(
+  fileIds: string[],
+  dateFrom?: string,
+  dateTo?: string,
+  instruction?: string,
   token?: string,
-): Promise<ReportData> {
-  const report = await request<ReportData>(
+): Promise<{ report_id: string; status: "processing" }> {
+  return request(
     "/api/v1/reports/generate",
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ documentIds, startDate, endDate }),
+      body: JSON.stringify({
+        file_ids: fileIds.length > 0 ? fileIds : undefined,
+        date_from: dateFrom || undefined,
+        date_to: dateTo || undefined,
+        instruction: instruction || undefined,
+      }),
     },
     token,
   );
-  return assertReportShape(report);
+}
+
+export function getReportStatus(reportId: string, token?: string): Promise<ReportJob> {
+  return request(`/api/v1/reports/generate/${reportId}`, {}, token);
+}
+
+/**
+ * Downloads a completed report's PDF and saves it via a temporary object URL.
+ * A plain `<a href>` can't carry the `Authorization` header this route
+ * requires, so this fetches the file directly instead of using `request`
+ * (which expects a JSON body, not a binary PDF).
+ */
+export async function downloadGeneratedReportPdf(reportId: string, token?: string): Promise<void> {
+  const headers = new Headers();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const response = await fetch(`${API_BASE_URL}/api/v1/reports/generate/${reportId}/download`, { headers });
+  if (!response.ok) {
+    throw new ApiError("The report PDF isn't available yet. Try again in a moment.", response.status);
+  }
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${reportId}.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 // --- Folders (GET /api/v1/folders) ---

@@ -26,6 +26,28 @@
   display: none;
 }
 
+/* Native <input type="date"> defaults to a light-theme calendar icon and
+   popup, which renders near-invisible on this app's dark surfaces (a black
+   icon on a dark background) — that's why it looked unclickable rather than
+   actually being broken. `color-scheme: dark` tells the browser to render
+   the icon and native calendar popup in dark mode instead; the indicator is
+   also enlarged and given a pointer cursor so it reads as clickable. */
+.date-input {
+  color-scheme: dark;
+}
+
+.date-input::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  padding: 4px;
+  margin-left: 4px;
+  border-radius: 6px;
+  filter: invert(72%) sepia(43%) saturate(597%) hue-rotate(357deg) brightness(103%) contrast(96%);
+}
+
+.date-input::-webkit-calendar-picker-indicator:hover {
+  background-color: rgba(251, 191, 36, 0.15);
+}
+
 /* Material Symbols baseline fix */
 .material-symbols-outlined {
   font-variation-settings:

@@ -204,3 +204,41 @@ export interface ReportKpi {
   unit: string | null;
   metric: string;
 }
+
+export interface ReportFinding {
+  finding: string;
+  severity: string;
+  supporting_metrics: string[];
+  evidence: unknown[];
+}
+
+export interface ReportSourceDocument {
+  document_id: string;
+  filename: string;
+}
+
+/**
+ * The generated-report shape from `ml_service/agents/report_agent.py`
+ * (`_compose_report` / `_compose_content_report`) — generic, not
+ * mining-specific like the old `ReportData`/`getMockReport` demo shape.
+ * `report_url`, when present, is a path on the ML service (e.g.
+ * `/reports/rpt_xxx/download`) — the frontend never calls it directly, only
+ * via the backend's `GET /api/v1/reports/generate/:reportId/download` proxy.
+ */
+export interface GeneratedReport {
+  title: string;
+  summary: string;
+  sections: ReportSection[];
+  findings: ReportFinding[];
+  kpis: ReportKpi[];
+  charts: ReportChart[];
+  sources: ReportSourceDocument[];
+  limitations: string;
+  report_url?: string;
+}
+
+/** Poll result from `GET /api/v1/reports/generate/:reportId`. */
+export type ReportJob =
+  | { report_id: string; status: "processing" }
+  | { report_id: string; status: "completed"; report: GeneratedReport }
+  | { report_id: string; status: "failed"; error: string };
