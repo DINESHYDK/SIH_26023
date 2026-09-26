@@ -7,6 +7,11 @@ const Folder = require('../models/Folder');
 const { buildMockReport } = require('./reportController');
 
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+// Scanned-PDF ingestion backs off on Gemini 429/503s for up to
+// GEMINI_RETRY_BUDGET_S (300s) per batch of pages, so a multi-batch upload can
+// legitimately take minutes. The old 120s timeout marked such uploads failed
+// here while the ML service went on to finish them.
+const ML_UPLOAD_TIMEOUT_MS = Number(process.env.ML_UPLOAD_TIMEOUT_MS) || 15 * 60 * 1000;
 
 // Extract a readable message from an ML service error body ({ detail: string | [...] })
 const mlErrorMessage = (data, fallback) => {
@@ -102,7 +107,7 @@ const uploadDocument = async (req, res) => {
       files.forEach(f => formData.append('files', fs.createReadStream(f.path), f.originalname));
 
       const mlResponse = await axios.post(`${ML_SERVICE_URL}/process-document`,
-        formData, { headers: formData.getHeaders(), timeout: 120000 }
+        formData, { headers: formData.getHeaders(), timeout: ML_UPLOAD_TIMEOUT_MS }
       );
 
       // Clean up temp files

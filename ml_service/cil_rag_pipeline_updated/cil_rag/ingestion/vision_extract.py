@@ -21,25 +21,31 @@ Quota-friendly design (this is what fixes the 429 / RESOURCE_EXHAUSTED errors):
      output budget and slow every call).
   4. SHARED CLIENT-SIDE LIMITER -- OCR and answer calls share GEMINI_RPM and
      GEMINI_RPD limits, so concurrent uploads cannot exceed either quota.
-  5. SMART RETRIES -- on 429 we wait the server's own `retryDelay` (the old
-     2/4/8/16s backoff was shorter than the 60s per-minute window, so it
-     burned all retries). A *daily* quota error is not retried at all: it
-     raises DailyQuotaExceeded, and because every finished page is cached
-     immediately, rerunning later resumes where it stopped.
+  5. SHARED EXPONENTIAL BACKOFF -- transient failures (429 per-minute, 5xx,
+     timeouts) back off per model with full-jitter exponential delays
+     (GEMINI_BASE_BACKOFF_S doubling up to GEMINI_MAX_BACKOFF_S, never below
+     the server's own `retryDelay`) for up to GEMINI_RETRY_BUDGET_S per
+     batch. The backoff state is process-wide, so concurrent uploads back off
+     together instead of hammering an overloaded model. A *daily* quota error
+     retires that model; DailyQuotaExceeded is raised only when every model
+     is retired. Every finished page is cached immediately, so rerunning
+     later resumes where it stopped.
   6. BISECT ON FAILURE -- if a batch is truncated (MAX_TOKENS) or comes back
      unparseable, it's split in half and retried, down to single pages.
-  7. MODEL FALLBACK -- a 503 "high demand" is the model being overloaded, not
-     our quota. After OVERLOAD_RETRIES attempts on one model the batch moves
-     to the next model in GEMINI_FALLBACK_MODELS instead of failing the upload.
+  7. MODEL FALLBACK -- while the preferred model is backing off, the batch
+     goes to the next model in GEMINI_FALLBACK_MODELS that is ready, and
+     returns to the preferred one once its backoff ends.
 
 Env knobs: GEMINI_API_KEY, GEMINI_MODEL, GEMINI_FALLBACK_MODELS (comma list,
 default gemini-2.5-flash), GEMINI_RPM, EXTRACT_BATCH_SIZE,
+GEMINI_RETRY_BUDGET_S, GEMINI_BASE_BACKOFF_S, GEMINI_MAX_BACKOFF_S,
 GEMINI_THINKING=on (to leave thinking enabled).
 """
 import json
 import os
 import random
 import re
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -56,9 +62,11 @@ GEMINI_MODELS = list(dict.fromkeys(
     [GEMINI_MODEL_NAME] + [m.strip() for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash").split(",") if m.strip()]
 ))
 BATCH_SIZE = int(os.getenv("EXTRACT_BATCH_SIZE", "8"))
-MAX_RETRIES = 6
-OVERLOAD_RETRIES = 2  # 503s tolerated on one model before moving to the next
-MAX_BACKOFF_S = 90.0
+# Total time one batch may spend retrying transient errors before giving up.
+# Keep it below the backend's ML_UPLOAD_TIMEOUT_MS for a single batch.
+RETRY_BUDGET_S = float(os.getenv("GEMINI_RETRY_BUDGET_S", "300"))
+BASE_BACKOFF_S = float(os.getenv("GEMINI_BASE_BACKOFF_S", "2"))
+MAX_BACKOFF_S = float(os.getenv("GEMINI_MAX_BACKOFF_S", "60"))
 MAX_OUTPUT_TOKENS = 32768
 
 BATCH_PROMPT = """You are extracting structured content from <N> consecutive pages
@@ -180,57 +188,141 @@ def _generate_json(parts: list, model: str = GEMINI_MODEL_NAME) -> tuple:
     return (resp.text or ""), finish
 
 
+# Transient server-side failures worth retrying. 429 is split further below
+# (per-minute vs per-day); anything else with an HTTP code is a real error.
+_RETRYABLE_CODES = {408, 429, 500, 502, 503, 504}
+_OVERLOAD_CODES = {500, 502, 503, 504}
+
+
+def _is_network_error(exc: Exception) -> bool:
+    """Timeouts / dropped connections from the SDK's HTTP layer (httpx)."""
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    try:
+        import httpx
+        return isinstance(exc, httpx.TransportError)
+    except ImportError:
+        return False
+
+
 def _classify_error(exc: Exception) -> tuple:
-    """-> (kind, server_suggested_wait_seconds). kind: 'daily' | 'retry' | 'fatal'."""
+    """-> (kind, server_suggested_wait_seconds).
+    kind: 'daily' | 'rate' (429/minute) | 'overload' (5xx/network) | 'fatal'."""
     code = getattr(exc, "code", None)
-    if code not in (429, 500, 503):
+    if code is None and _is_network_error(exc):
+        return "overload", None
+    if code not in _RETRYABLE_CODES:
         return "fatal", None
     text = str(exc)
     if code == 429 and re.search(r"PerDay|per day|requests per day", text, re.I):
         return "daily", None
     m = (re.search(r"retry\s+in\s+(\d+(?:\.\d+)?)\s*s", text, re.I)
          or re.search(r"retryDelay\W+(\d+(?:\.\d+)?)s", text))
-    return "retry", (float(m.group(1)) if m else None)
+    return ("rate" if code in (408, 429) else "overload"), (float(m.group(1)) if m else None)
+
+
+class _ModelHealth:
+    """Process-wide, thread-safe backoff state per model.
+
+    Shared by every concurrent upload/batch, so when a model starts failing
+    they all back off from it together instead of each hammering it until
+    their own retries run out. Consecutive failures grow the backoff
+    exponentially (full jitter, so callers don't retry in lockstep); one
+    success resets it.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._until: dict = {}      # model -> monotonic time it may be called again
+        self._failures: dict = {}   # model -> consecutive failures
+        self._exhausted: set = set()  # models whose daily quota is gone
+
+    def reset(self):
+        with self._lock:
+            self._until.clear(); self._failures.clear(); self._exhausted.clear()
+
+    def pick(self, models: list) -> tuple:
+        """-> (model, seconds until it may be called). Prefers the earliest
+        listed model that is ready now; otherwise the one ready soonest.
+        (None, 0) when every model's daily quota is exhausted."""
+        now = time.monotonic()
+        with self._lock:
+            usable = [m for m in models if m not in self._exhausted]
+            if not usable:
+                return None, 0.0
+            waits = [(max(0.0, self._until.get(m, 0.0) - now), i, m) for i, m in enumerate(usable)]
+        ready = [w for w in waits if w[0] == 0.0]
+        wait, _, model = min(ready or waits)
+        return model, wait
+
+    def failed(self, model: str, server_wait) -> float:
+        """Record a transient failure; return the backoff applied to the model."""
+        with self._lock:
+            failures = self._failures.get(model, 0) + 1
+            self._failures[model] = failures
+            ceiling = min(MAX_BACKOFF_S, BASE_BACKOFF_S * (2 ** (failures - 1)))
+            # Full jitter, but never shorter than what the server asked for.
+            delay = max(server_wait or 0.0, random.uniform(BASE_BACKOFF_S, max(BASE_BACKOFF_S, ceiling)))
+            self._until[model] = max(self._until.get(model, 0.0), time.monotonic() + delay)
+            return delay
+
+    def succeeded(self, model: str):
+        with self._lock:
+            self._failures.pop(model, None)
+
+    def exhausted(self, model: str):
+        with self._lock:
+            self._exhausted.add(model)
+
+
+_model_health = _ModelHealth()
 
 
 def _generate_with_retry(parts: list) -> tuple:
-    """-> (response_text, finish_reason, model_used)."""
-    models = GEMINI_MODELS
-    model_index, overloaded = 0, 0
-    for attempt in range(MAX_RETRIES):
-        model = models[model_index]
+    """-> (response_text, finish_reason, model_used).
+
+    Retries transient failures (429 per-minute, 5xx, timeouts) with shared
+    exponential backoff until RETRY_BUDGET_S is spent, moving to fallback
+    models while the preferred one cools down. A per-day 429 retires that
+    model; only when every model is retired is DailyQuotaExceeded raised.
+    """
+    deadline = time.monotonic() + RETRY_BUDGET_S
+    last_exc, attempts = None, 0
+    while True:
+        model, wait = _model_health.pick(GEMINI_MODELS)
+        if model is None:
+            raise DailyQuotaExceeded(
+                "Gemini daily request quota exhausted for every configured model. Finished pages are cached; "
+                "rerun after the quota resets (or enable billing / add GEMINI_FALLBACK_MODELS)."
+            ) from last_exc
+        if wait > 0:
+            if time.monotonic() + wait > deadline:
+                raise ModelsUnavailable(
+                    f"Gemini stayed unavailable for {RETRY_BUDGET_S:.0f}s across {attempts} attempt(s) "
+                    f"({', '.join(GEMINI_MODELS)}); last error: {last_exc}. "
+                    "Pages extracted so far are cached; retry the upload later to resume."
+                ) from last_exc
+            time.sleep(wait)
         # All OCR and answer-generation calls use this same guard, so parallel
         # uploads cannot collectively overrun the Gemini RPM/RPD allowance.
         gemini_rate_limiter.acquire()
+        attempts += 1
         try:
-            return (*_generate_json(parts, model=model), model)
+            result = _generate_json(parts, model=model)
+            _model_health.succeeded(model)
+            return (*result, model)
         except Exception as exc:  # classified below; anything unknown is re-raised
             kind, server_wait = _classify_error(exc)
             if kind == "fatal":
                 raise
+            last_exc = exc
             if kind == "daily":
-                raise DailyQuotaExceeded(
-                    "Gemini daily request quota exhausted. Finished pages are cached; "
-                    "rerun after the quota resets (or enable billing / switch model)."
-                ) from exc
-            overload = getattr(exc, "code", None) == 503
-            if overload:
-                overloaded += 1
-                if overloaded >= OVERLOAD_RETRIES and model_index + 1 < len(models):
-                    model_index, overloaded = model_index + 1, 0
-                    print(f"  {model} overloaded (503); switching to {models[model_index]}")
-                    continue  # a different model: no need to wait out this one's spike
-            if attempt == MAX_RETRIES - 1:
-                if overload:
-                    raise ModelsUnavailable(
-                        f"Gemini model(s) {', '.join(models[:model_index + 1])} are overloaded (503). "
-                        "Pages extracted so far are cached; retry the upload later to resume."
-                    ) from exc
-                raise
-            backoff = min(MAX_BACKOFF_S, 5.0 * (2 ** attempt))
-            wait = min(MAX_BACKOFF_S, max(server_wait or 0.0, backoff)) + random.uniform(0, 1)
-            print(f"  gemini {exc.code} on {model}, waiting {wait:.0f}s (attempt {attempt + 1}/{MAX_RETRIES})...")
-            time.sleep(wait)
+                print(f"  {model}: daily quota exhausted; retiring it for this process")
+                _model_health.exhausted(model)
+                continue
+            delay = _model_health.failed(model, server_wait)
+            print(f"  gemini {getattr(exc, 'code', type(exc).__name__)} on {model} "
+                  f"(attempt {attempts}); backing off {model} for {delay:.0f}s")
 
 
 # ------------------------------------------------------------------ parsing

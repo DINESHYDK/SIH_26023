@@ -20,7 +20,7 @@ from agents.query_agent import prepare_query, stream_prepared_answer
 from agents.report_agent import generate_report
 from agents.scanned_rag import scanned_document_rag
 # Importable once agents.scanned_rag has put the OCR pipeline on sys.path.
-from ingestion.vision_extract import ModelsUnavailable
+from ingestion.vision_extract import DailyQuotaExceeded, ModelsUnavailable
 import asyncio
 
 app = FastAPI(
@@ -139,7 +139,7 @@ async def process_documents(
             async with slots:
                 result = await asyncio.to_thread(ingest_pdf, upload.filename, content)
             return {"filename": upload.filename, "status": "processed", "result": result}
-        except GeminiRateLimitExceeded as exc:
+        except (GeminiRateLimitExceeded, DailyQuotaExceeded) as exc:
             return {"filename": upload.filename, "status": "rate_limited", "error": str(exc)}
         except ModelsUnavailable as exc:
             return {"filename": upload.filename, "status": "unavailable", "error": str(exc)}
@@ -156,9 +156,10 @@ async def process_documents(
     if len(uploads) == 1 and results[0]["status"] == "processed":
         return results[0]["result"]
     if len(uploads) == 1 and results[0]["status"] == "rate_limited":
-        raise HTTPException(status_code=429, detail=results[0]["error"])
+        raise HTTPException(status_code=429, detail=results[0]["error"], headers={"Retry-After": "3600"})
     if len(uploads) == 1 and results[0]["status"] == "unavailable":
-        raise HTTPException(status_code=503, detail=results[0]["error"])
+        # Extracted pages are cached, so a retry after this resumes, not restarts.
+        raise HTTPException(status_code=503, detail=results[0]["error"], headers={"Retry-After": "120"})
     if len(uploads) == 1:
         raise HTTPException(status_code=400, detail=results[0]["error"])
 

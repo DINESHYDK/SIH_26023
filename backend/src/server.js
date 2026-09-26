@@ -37,9 +37,12 @@ app.get('/api/health', (req, res) => {
 });
 
 if(process.env.NODE_ENV !== 'test'){
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`Backend API Gateway running on port ${PORT}`);
   });
+  // Node's default 5-minute requestTimeout would cut off scanned-PDF uploads
+  // that are still backing off on Gemini 429/503s (see ML_UPLOAD_TIMEOUT_MS).
+  server.requestTimeout = (Number(process.env.ML_UPLOAD_TIMEOUT_MS) || 15 * 60 * 1000) + 60 * 1000;
 }
 
 module.exports = app;
