@@ -25,8 +25,11 @@ export function Header() {
   const [isScrolled, setIsScrolled] = useState(false);
 
   // rAF-throttled scroll listener — only active on marketing routes, where the
-  // capsule nav shrinks from 100% to ~80% width once the page has scrolled past
-  // SCROLL_SHRINK_THRESHOLD.
+  // nav starts genuinely full-width (max-w-none) and shrinks into a capsule
+  // (max-w-4xl) once the page has scrolled past SCROLL_SHRINK_THRESHOLD.
+  // (Previously both states were capped at max-w-5xl/max-w-4xl, so on any
+  // screen wider than ~1024px the "unscrolled" state never reached 100% width
+  // at all — this is the fix for that.)
   useEffect(() => {
     if (!isMarketingRoute) return;
 
@@ -51,8 +54,8 @@ export function Header() {
     return (
       <header className="fixed inset-x-0 top-0 z-50 flex justify-center px-space-lg pt-space-sm">
         <div
-          className={`flex items-center gap-space-md h-14 w-full rounded-full border border-border-crisp bg-surface-card/95 backdrop-blur-xl shadow-xl px-space-lg transition-all duration-300 ease-out ${
-            isScrolled ? "max-w-4xl" : "max-w-5xl"
+          className={`flex items-center gap-space-md h-14 w-full rounded-full border border-border-crisp bg-surface-card/95 backdrop-blur-xl shadow-xl px-space-lg transition-[max-width] duration-700 ease-in-out ${
+            isScrolled ? "max-w-4xl" : "max-w-none"
           }`}
         >
           <Link href="/" className="flex items-center gap-space-sm min-w-0">
