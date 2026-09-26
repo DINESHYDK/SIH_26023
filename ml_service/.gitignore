@@ -2,6 +2,9 @@
 storage/*
 !storage/.gitkeep
 !storage/scanned_documents/
+storage/scanned_documents/*
 !storage/scanned_documents/.gitkeep
 !storage/typed_documents/
+storage/typed_documents/*
 !storage/typed_documents/.gitkeep
+__pycache__/
