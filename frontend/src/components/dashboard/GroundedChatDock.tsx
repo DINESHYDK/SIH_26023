@@ -1,9 +1,65 @@
 "use client";
 
-import React, { type FormEvent } from "react";
+import React, { useState, type FormEvent } from "react";
 import ReactMarkdown from "react-markdown";
-import type { QueryResponse, ReportData } from "@/lib/report-types";
+import type { Citation, QueryResponse, ReportData } from "@/lib/report-types";
 import { DataModeBadge } from "@/components/ui/DataModeBadge";
+
+/** Scanned-page images behind the citations, one thumbnail per distinct page. */
+function ReferencePages({ citations }: { citations: Citation[] }) {
+  const [open, setOpen] = useState<Citation | null>(null);
+  const pages = citations.filter(
+    (citation, index) =>
+      citation.imageBase64 &&
+      citations.findIndex((other) => other.documentId === citation.documentId && other.page === citation.page) === index,
+  );
+  if (pages.length === 0) return null;
+  const src = (citation: Citation) => `data:${citation.imageMimeType ?? "image/png"};base64,${citation.imageBase64}`;
+
+  return (
+    <>
+      <p className="mt-space-sm font-mono-label text-mono-label uppercase tracking-wider text-text-muted">
+        Reference Pages
+      </p>
+      <div className="mt-space-xs flex gap-space-xs overflow-x-auto pb-1">
+        {pages.map((citation) => (
+          <button
+            key={`${citation.documentId}-${citation.page}`}
+            type="button"
+            onClick={() => setOpen(citation)}
+            className="shrink-0 overflow-hidden rounded border border-border-crisp bg-surface-card text-left hover:border-tertiary-container/60"
+            aria-label={`Open page ${citation.page}`}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element -- data URL, nothing to optimise */}
+            <img src={src(citation)} alt={`Source page ${citation.page}`} className="h-28 w-20 object-cover object-top" />
+            <span className="block px-1.5 py-0.5 font-mono-citation text-mono-citation text-text-muted">p. {citation.page}</span>
+          </button>
+        ))}
+      </div>
+      {open && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Source page ${open.page}`}
+          onClick={() => setOpen(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-space-md"
+        >
+          <div className="relative max-h-full max-w-3xl overflow-auto rounded-lg bg-surface-card" onClick={(event) => event.stopPropagation()}>
+            <button
+              type="button"
+              onClick={() => setOpen(null)}
+              className="absolute right-2 top-2 rounded bg-surface-container-high px-2 py-1 text-body-sm text-text-primary"
+            >
+              Close
+            </button>
+            {/* eslint-disable-next-line @next/next/no-img-element -- data URL, nothing to optimise */}
+            <img src={src(open)} alt={`Source page ${open.page}`} className="w-full" />
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 
 interface GroundedChatDockProps {
   query: string;
@@ -100,6 +156,7 @@ export function GroundedChatDock({
                     </span>
                   ))}
                 </div>
+                <ReferencePages citations={queryResponse.citations} />
               </div>
             )}
           </div>

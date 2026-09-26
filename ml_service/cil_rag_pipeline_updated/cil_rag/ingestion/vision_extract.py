@@ -8,8 +8,10 @@ straight to Gemini, which returns heading, narrative text and tables as JSON.
 
 Quota-friendly design (this is what fixes the 429 / RESOURCE_EXHAUSTED errors):
   1. BATCHING -- several pages go in ONE request (EXTRACT_BATCH_SIZE, default
-     4). 21 pages = 6 requests instead of 21. RPM and RPD limits both count
-     requests, so this is the biggest lever.
+     8). 21 pages = 3 requests instead of 21. RPM and RPD limits both count
+     requests, so this is the biggest lever. Each finished batch is also
+     handed to on_batch (with the exact image bytes that were sent) so the
+     caller can persist a per-batch JSON record.
   2. COMPACT OUTPUT -- tables come back as `columns` once + `rows` as arrays,
      not one dict per row repeating every column name. ~2-3x fewer output
      tokens on table-heavy pages. Rows are expanded back into dicts here, so
@@ -26,8 +28,12 @@ Quota-friendly design (this is what fixes the 429 / RESOURCE_EXHAUSTED errors):
      immediately, rerunning later resumes where it stopped.
   6. BISECT ON FAILURE -- if a batch is truncated (MAX_TOKENS) or comes back
      unparseable, it's split in half and retried, down to single pages.
+  7. MODEL FALLBACK -- a 503 "high demand" is the model being overloaded, not
+     our quota. After OVERLOAD_RETRIES attempts on one model the batch moves
+     to the next model in GEMINI_FALLBACK_MODELS instead of failing the upload.
 
-Env knobs: GEMINI_API_KEY, GEMINI_MODEL, GEMINI_RPM, EXTRACT_BATCH_SIZE,
+Env knobs: GEMINI_API_KEY, GEMINI_MODEL, GEMINI_FALLBACK_MODELS (comma list,
+default gemini-2.5-flash), GEMINI_RPM, EXTRACT_BATCH_SIZE,
 GEMINI_THINKING=on (to leave thinking enabled).
 """
 import json
@@ -45,8 +51,13 @@ from agents.gemini_rate_limiter import gemini_rate_limiter
 load_dotenv()
 
 GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-BATCH_SIZE = int(os.getenv("EXTRACT_BATCH_SIZE", "4"))
+# Primary first, then fallbacks, de-duplicated in order.
+GEMINI_MODELS = list(dict.fromkeys(
+    [GEMINI_MODEL_NAME] + [m.strip() for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash").split(",") if m.strip()]
+))
+BATCH_SIZE = int(os.getenv("EXTRACT_BATCH_SIZE", "8"))
 MAX_RETRIES = 6
+OVERLOAD_RETRIES = 2  # 503s tolerated on one model before moving to the next
 MAX_BACKOFF_S = 90.0
 MAX_OUTPUT_TOKENS = 32768
 
@@ -119,6 +130,10 @@ class BatchOutputError(ValueError):
     """Model output was truncated, unparseable, or missing pages."""
 
 
+class ModelsUnavailable(RuntimeError):
+    """Every configured model stayed overloaded (503). Cached pages are safe."""
+
+
 # ---------------------------------------------------------------- transport
 
 _client = None
@@ -137,7 +152,7 @@ def _get_client():
     return _client
 
 
-def _generate_json(parts: list) -> tuple:
+def _generate_json(parts: list, model: str = GEMINI_MODEL_NAME) -> tuple:
     """One raw Gemini call. parts = [("text", str) | ("image", bytes, mime)].
     Returns (response_text, finish_reason_str). This is the only function that
     touches the network, so it's the seam tests replace."""
@@ -153,11 +168,11 @@ def _generate_json(parts: list) -> tuple:
         response_mime_type="application/json",
         max_output_tokens=MAX_OUTPUT_TOKENS,
     )
-    if GEMINI_MODEL_NAME.startswith("gemini-2.5-flash") and os.getenv("GEMINI_THINKING", "off") != "on":
+    if model.startswith("gemini-2.5-flash") and os.getenv("GEMINI_THINKING", "off") != "on":
         cfg["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
 
     resp = _get_client().models.generate_content(
-        model=GEMINI_MODEL_NAME,
+        model=model,
         contents=contents,
         config=types.GenerateContentConfig(**cfg),
     )
@@ -179,12 +194,16 @@ def _classify_error(exc: Exception) -> tuple:
 
 
 def _generate_with_retry(parts: list) -> tuple:
+    """-> (response_text, finish_reason, model_used)."""
+    models = GEMINI_MODELS
+    model_index, overloaded = 0, 0
     for attempt in range(MAX_RETRIES):
+        model = models[model_index]
         # All OCR and answer-generation calls use this same guard, so parallel
         # uploads cannot collectively overrun the Gemini RPM/RPD allowance.
         gemini_rate_limiter.acquire()
         try:
-            return _generate_json(parts)
+            return (*_generate_json(parts, model=model), model)
         except Exception as exc:  # classified below; anything unknown is re-raised
             kind, server_wait = _classify_error(exc)
             if kind == "fatal":
@@ -194,11 +213,23 @@ def _generate_with_retry(parts: list) -> tuple:
                     "Gemini daily request quota exhausted. Finished pages are cached; "
                     "rerun after the quota resets (or enable billing / switch model)."
                 ) from exc
+            overload = getattr(exc, "code", None) == 503
+            if overload:
+                overloaded += 1
+                if overloaded >= OVERLOAD_RETRIES and model_index + 1 < len(models):
+                    model_index, overloaded = model_index + 1, 0
+                    print(f"  {model} overloaded (503); switching to {models[model_index]}")
+                    continue  # a different model: no need to wait out this one's spike
             if attempt == MAX_RETRIES - 1:
+                if overload:
+                    raise ModelsUnavailable(
+                        f"Gemini model(s) {', '.join(models[:model_index + 1])} are overloaded (503). "
+                        "Pages extracted so far are cached; retry the upload later to resume."
+                    ) from exc
                 raise
             backoff = min(MAX_BACKOFF_S, 5.0 * (2 ** attempt))
             wait = min(MAX_BACKOFF_S, max(server_wait or 0.0, backoff)) + random.uniform(0, 1)
-            print(f"  gemini {exc.code}, waiting {wait:.0f}s (attempt {attempt + 1}/{MAX_RETRIES})...")
+            print(f"  gemini {exc.code} on {model}, waiting {wait:.0f}s (attempt {attempt + 1}/{MAX_RETRIES})...")
             time.sleep(wait)
 
 
@@ -269,18 +300,30 @@ def _build_page(data: dict, page_number: int) -> ExtractedPage:
 
 # ---------------------------------------------------------------- extraction
 
-def _extract_batch(page_paths: dict) -> dict:
+@dataclass
+class BatchResult:
+    """One API call's output plus exactly what was sent, for on_batch."""
+    page_numbers: list
+    pages: dict           # {page_number: ExtractedPage}
+    images: dict          # {page_number: (png bytes, mime type)} as sent
+    model: str
+
+
+def _extract_batch(page_paths: dict, _result: list = None) -> dict:
     """ONE API request for all pages in page_paths ({page_number: image_path}).
-    Returns {page_number: ExtractedPage} for the pages the model returned."""
+    Returns {page_number: ExtractedPage} for the pages the model returned.
+    If _result is a list, a BatchResult is appended to it."""
     nums = list(page_paths)
     prompt = (BATCH_PROMPT.replace("<N>", str(len(nums)))
                           .replace("<PAGE_LIST>", ", ".join(map(str, nums))))
     parts = [("text", prompt)]
+    images = {}
     for pn in nums:
         with open(page_paths[pn], "rb") as f:
-            parts += [("text", f"PAGE {pn}:"), ("image", f.read(), "image/png")]
+            images[pn] = (f.read(), "image/png")
+        parts += [("text", f"PAGE {pn}:"), ("image", *images[pn])]
 
-    raw, finish = _generate_with_retry(parts)
+    raw, finish, model = _generate_with_retry(parts)
     if "MAX_TOKENS" in finish:
         raise BatchOutputError(f"output truncated for pages {nums}")
     try:
@@ -303,15 +346,19 @@ def _extract_batch(page_paths: dict) -> dict:
     if len(by_num) != len(items) and len(items) == len(nums):
         by_num = dict(zip(nums, items))  # model mislabeled page numbers; trust order
 
-    return {pn: _build_page(d, pn) for pn, d in by_num.items()}
+    pages = {pn: _build_page(d, pn) for pn, d in by_num.items()}
+    if _result is not None:
+        _result.append(BatchResult(nums, pages, images, model))
+    return pages
 
 
 def extract_pages(page_paths: dict, batch_size: int = None,
-                  on_page: Callable = None) -> dict:
+                  on_page: Callable = None, on_batch: Callable = None) -> dict:
     """Extract many pages with as few requests as possible.
 
     page_paths: {page_number: image_path}. on_page(ExtractedPage) is called the
     moment each page succeeds (pass page_cache.save so a crash loses nothing).
+    on_batch(BatchResult) is called once per successful API call.
     Returns {page_number: ExtractedPage}.
     """
     batch_size = batch_size or BATCH_SIZE
@@ -324,8 +371,9 @@ def extract_pages(page_paths: dict, batch_size: int = None,
         batch = queue.popleft()
         calls += 1
         print(f"  request {calls}: pages {batch[0]}-{batch[-1]} ({len(batch)} page(s))")
+        sent = []
         try:
-            got = _extract_batch({pn: page_paths[pn] for pn in batch})
+            got = _extract_batch({pn: page_paths[pn] for pn in batch}, _result=sent)
         except BatchOutputError as e:
             if len(batch) == 1:
                 raise
@@ -339,6 +387,8 @@ def extract_pages(page_paths: dict, batch_size: int = None,
             results[pn] = page
             if on_page:
                 on_page(page)
+        if on_batch and sent and got:
+            on_batch(sent[0])
         missing = [pn for pn in batch if pn not in got]
         if missing:
             if len(missing) == len(batch):

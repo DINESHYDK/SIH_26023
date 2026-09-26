@@ -64,9 +64,13 @@ def get_documents(document_ids: list[str]) -> list[dict[str, Any]]:
 
 
 def get_documents_in_range(date_from: date, date_to: date) -> list[dict[str, Any]]:
-    """Inclusive calendar-day range, evaluated without any semantic retrieval."""
-    start = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
-    end = datetime.combine(date_to, time.max, tzinfo=timezone.utc)
+    """Inclusive calendar-day range, evaluated without any semantic retrieval.
+
+    Days are the server's local calendar days, not UTC: an upload at 04:28
+    IST on the 26th is 22:58 UTC on the 25th and must still count as the 26th.
+    """
+    start = datetime.combine(date_from, time.min).astimezone()
+    end = datetime.combine(date_to, time.max).astimezone()
     # Older indexed uploads predate the catalog. Their source PDF timestamp is
     # the best available deterministic upload proxy and is recorded once.
     for kind in ("typed", "scanned"):

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
@@ -94,7 +96,7 @@ def _parse_json_object(text: str) -> dict[str, Any]:
 
 def _resolve_documents(state: ReportState) -> ReportState:
     request = state["request"]
-    ids = request.get("file_ids") or []
+    ids = list(dict.fromkeys(request.get("file_ids") or []))
     documents = get_documents(ids) if ids else get_documents_in_range(request["date_from"], request["date_to"])
     if not documents:
         raise ValueError("No indexed documents match the requested selection")
@@ -125,6 +127,8 @@ def _load_document_content(state: ReportState) -> ReportState:
                     pages.append({"page": raw.get("page_number", len(pages) + 1), "text": text})
         if not pages:
             raise ValueError(f"No extracted content is available for {document['filename']}; reprocess it before reporting.")
+        # Globbed files come back as page_1, page_10, page_2...: restore reading order.
+        pages.sort(key=lambda page: page["page"] if isinstance(page["page"], int) else 0)
         documents.append({"document_id": document["document_id"], "filename": document["filename"], "pages": pages})
     return {"document_contents": documents}
 
@@ -136,42 +140,127 @@ def _content_model() -> ChatOpenRouter:
     return ChatOpenRouter(model=os.getenv("OPENROUTER_MODEL", "openrouter/auto"), api_key=api_key, temperature=0.1)
 
 
-def _analyse_document_content(state: ReportState) -> ReportState:
-    """Use the LLM only after supplying actual extracted page text and citations."""
-    remaining = 50_000
-    context = []
-    for document in state["document_contents"]:
-        for page in document["pages"]:
-            fragment = f"[{document['document_id']} p{page['page']}] {page['text']}\n"
-            context.append(fragment[:remaining])
-            remaining -= len(fragment)
-            if remaining <= 0:
-                break
-        if remaining <= 0:
-            break
-    if not context:
-        raise ValueError("No usable document text was available for analysis")
-    instruction = state["request"].get("instruction") or "Provide a factual analysis of these documents."
-    prompt = f'''Analyse only this document content for the user's request: {instruction}
-Return JSON only: {{"title":"...","executive_summary":"...","findings":["..."],"extracted_facts":["..."],"grade_records":[{{"subject":"...","marks_obtained":number-or-null,"maximum_marks":number-or-null,"grade":"..."-or-null,"page":number}}],"datasets":[{{"title":"...","chart_type":"bar"|"line","x_label":"...","y_label":"...","series":["..."],"rows":[{{"label":"...","values":[number-or-null],"page":number}}]}}],"limitations":["..."]}}.
-For a gradesheet, extract every explicit subject/marks/maximum/grade row. Do not calculate or invent values. Every fact and finding must cite [document_id pN]. Use null for unclear cells.
-"datasets" holds the numeric tables to chart. Whenever the request asks for a graph, chart, trend or comparison, or the document has a numeric table (per period, per item, per category), add a dataset: one row per x-axis value in document order, "values" in the same order as "series" (e.g. series ["SGPA","CGPA"], one row per semester). Copy numbers exactly as printed; never calculate them. Use "line" for values over time/periods, "bar" otherwise.
-Reply with the JSON object only: no prose, no markdown.
-Document content:
-{''.join(context)}'''
+# Each document is analysed in its own LLM call with its own budget, so one
+# long document can no longer crowd every other selected document out of the
+# prompt (a 98k-char MoU used to consume the whole shared 50k budget).
+DOCUMENT_CHAR_BUDGET = int(os.getenv("REPORT_DOCUMENT_CHARS", "60000"))
+MAX_PARALLEL_ANALYSES = int(os.getenv("REPORT_PARALLEL_ANALYSES", "3"))
+
+_ROMAN = {"1": "i", "2": "ii", "3": "iii", "4": "iv", "5": "v", "6": "vi", "7": "vii", "8": "viii", "9": "ix", "10": "x"}
+_STOPWORDS = {"the", "and", "for", "from", "with", "give", "make", "show", "some", "generate", "report", "graph",
+              "chart", "visual", "representation", "against", "into", "this", "that", "please", "all", "each"}
+
+
+def _terms(text: str) -> set[str]:
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    terms = {word for word in words if (len(word) > 2 or word.isdigit()) and word not in _STOPWORDS}
+    # "Annex 2" in a request must match "Annex-II" in the document.
+    return terms | {_ROMAN[word] for word in words if word in _ROMAN}
+
+
+def _select_pages(pages: list[dict[str, Any]], instruction: str, budget: int) -> list[dict[str, Any]]:
+    """All pages if they fit; otherwise the pages most relevant to the
+    instruction (distinct query terms matched), kept in document order."""
+    if sum(len(page["text"]) for page in pages) <= budget:
+        return pages
+    wanted = _terms(instruction)
+    scores = [len(wanted & set(re.findall(r"[a-z0-9]+", page["text"].lower()))) for page in pages]
+    chosen, used = [], 0
+    for index in sorted(range(len(pages)), key=lambda i: (-scores[i], i)):
+        size = len(pages[index]["text"])
+        if used + size <= budget:
+            chosen.append(index)
+            used += size
+    if not chosen:  # a single page larger than the budget: send its start
+        return [{**pages[0], "text": pages[0]["text"][:budget]}]
+    return [pages[index] for index in sorted(chosen)]
+
+
+def _invoke_json(prompt: str, schema: type[BaseModel]) -> dict[str, Any]:
     errors = []
     for attempt in range(2):
         try:
             response = _content_model().invoke(prompt if attempt == 0 else
                                                prompt + "\n\nYour previous reply was not a valid JSON object. Reply with ONLY the JSON object.")
             parsed = _parse_json_object(str(response.content))
-            analysis = ContentAnalysis.model_validate(parsed) if hasattr(ContentAnalysis, "model_validate") else ContentAnalysis.parse_obj(parsed)
-            break
+            model = schema.model_validate(parsed) if hasattr(schema, "model_validate") else schema.parse_obj(parsed)
+            return model.model_dump() if hasattr(model, "model_dump") else model.dict()
         except Exception as exc:
             errors.append(str(exc))
+    raise RuntimeError(" | ".join(errors))
+
+
+def _analyse_one(document: dict[str, Any], instruction: str, others: list[str]) -> dict[str, Any]:
+    pages = _select_pages(document["pages"], instruction, DOCUMENT_CHAR_BUDGET)
+    context = "".join(f"[{document['document_id']} p{page['page']}] {page['text']}\n" for page in pages)
+    scope = ""
+    if others:
+        scope = (f"This is one of several documents in the report (the others: {', '.join(others)}). "
+                 "The request may be about those documents too: answer only the parts this document "
+                 "contains, and do NOT report the absence of data that belongs to another document "
+                 "as a finding or limitation.\n")
+    prompt = f'''Analyse only this document ({document['filename']}) for the user's request: {instruction}
+{scope}Return JSON only: {{"title":"...","executive_summary":"...","findings":["..."],"extracted_facts":["..."],"grade_records":[{{"subject":"...","marks_obtained":number-or-null,"maximum_marks":number-or-null,"grade":"..."-or-null,"page":number}}],"datasets":[{{"title":"...","chart_type":"bar"|"line","x_label":"...","y_label":"...","series":["..."],"rows":[{{"label":"...","values":[number-or-null],"page":number}}]}}],"limitations":["..."]}}.
+For a gradesheet, extract every explicit subject/marks/maximum/grade row. Do not calculate or invent values. Every fact and finding must cite [document_id pN]. Use null for unclear cells.
+"datasets" holds the numeric tables to chart. Whenever the request asks for a graph, chart, trend or comparison, or the document has a numeric table (per period, per item, per category), add a dataset: one row per x-axis value in document order, "values" in the same order as "series" (e.g. series ["SGPA","CGPA"], one row per semester). Copy numbers exactly as printed; never calculate them. Use "line" for values over time/periods, "bar" otherwise. Put series with very different magnitudes in separate datasets.
+Section names may use roman numerals: "Annex 2" means "Annex-II", "Part A" is distinct from "Annexure-B".
+Reply with the JSON object only: no prose, no markdown.
+Document content:
+{context}'''
+    analysis = _invoke_json(prompt, ContentAnalysis)
+    if len(pages) < len(document["pages"]):
+        shown = ", ".join(str(page["page"]) for page in pages)
+        analysis["limitations"].append(
+            f"{document['filename']} is too long to analyse whole; only the pages most relevant to the request were read ({shown}).")
+    for dataset in analysis["datasets"]:
+        dataset["source"] = document["filename"]
+    for record in analysis["grade_records"]:
+        record["document_id"] = document["document_id"]
+    return {"document_id": document["document_id"], "filename": document["filename"], **analysis}
+
+
+class ReportHeading(BaseModel):
+    title: str
+    executive_summary: str
+
+
+def _analyse_document_content(state: ReportState) -> ReportState:
+    """Analyse each selected document separately (in parallel), then merge."""
+    documents = state["document_contents"]
+    instruction = state["request"].get("instruction") or "Provide a factual analysis of these documents."
+    names = [document["filename"] for document in documents]
+    results: list[dict[str, Any]] = []
+    failures: list[str] = []
+    with ThreadPoolExecutor(max_workers=max(1, min(MAX_PARALLEL_ANALYSES, len(documents)))) as pool:
+        futures = [pool.submit(_analyse_one, document, instruction, [name for name in names if name != document["filename"]])
+                   for document in documents]
+        for document, future in zip(documents, futures):
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                failures.append(f"{document['filename']}: {exc}")
+    if not results:
+        raise RuntimeError("Content analysis failed: " + " | ".join(failures))
+
+    merged: dict[str, Any] = {key: [item for result in results for item in result[key]]
+                              for key in ("findings", "extracted_facts", "grade_records", "datasets", "limitations")}
+    merged["limitations"] += [f"Analysis of {failure}" for failure in failures]
+    merged["per_document"] = [{key: result[key] for key in ("document_id", "filename", "title", "executive_summary")}
+                              for result in results]
+    if len(results) == 1:
+        merged.update(title=results[0]["title"], executive_summary=results[0]["executive_summary"])
     else:
-        raise RuntimeError("Content analysis failed: " + " | ".join(errors))
-    return {"content_analysis": analysis.model_dump() if hasattr(analysis, "model_dump") else analysis.dict()}
+        summaries = "\n".join(f"- {result['filename']}: {result['executive_summary']}" for result in results)
+        try:
+            heading = _invoke_json(
+                f"Write a report title and a 2-4 sentence executive summary covering all of these per-document "
+                f"summaries for the request: {instruction}\nUse only facts stated below and keep their citations.\n"
+                f'Return JSON only: {{"title":"...","executive_summary":"..."}}\n{summaries}', ReportHeading)
+        except Exception:
+            heading = {"title": instruction.strip()[:120] or "Multi-document report",
+                       "executive_summary": " ".join(result["executive_summary"] for result in results)}
+        merged.update(heading)
+    return {"content_analysis": merged}
 
 
 def _execute_content_analytics(state: ReportState) -> ReportState:
@@ -182,14 +271,21 @@ def _compose_content_report(state: ReportState) -> ReportState:
     analysis = state["content_analysis"]
     kpis = build_kpis(state["statistics"])
     metrics = [f"{kpi['label']}: {format_kpi(kpi)}" for kpi in kpis]
-    report = {"title": analysis["title"], "summary": analysis["executive_summary"], "sections": [
+    per_document = analysis.get("per_document") or []
+    sections = []
+    if len(per_document) > 1:
+        sections += [{"title": item["filename"], "content": item["executive_summary"]} for item in per_document]
+    sections += [
         {"title": "Analytical findings", "content": " ".join(analysis["findings"]) or "No grounded findings were returned."},
         {"title": "Document-derived facts", "content": " ".join(analysis["extracted_facts"]) or "No additional facts were extracted."},
-        {"title": "Computed grade metrics", "content": "; ".join(metrics) or "No numeric grade rows were explicitly extractable."},
-    ], "findings": [{"finding": finding, "severity": "content", "supporting_metrics": [], "evidence": []} for finding in analysis["findings"]],
-        "grade_records": analysis["grade_records"], "statistics": state["statistics"], "kpis": kpis, "charts": state["charts"],
-        "sources": [{"document_id": item["document_id"], "filename": item["filename"]} for item in state["documents"]],
-        "limitations": " ".join(analysis["limitations"] or ["Analysis is limited to extracted document content."])}
+    ]
+    if metrics:
+        sections.append({"title": "Computed grade metrics", "content": "; ".join(metrics)})
+    report = {"title": analysis["title"], "summary": analysis["executive_summary"], "sections": sections,
+              "findings": [{"finding": finding, "severity": "content", "supporting_metrics": [], "evidence": []} for finding in analysis["findings"]],
+              "grade_records": analysis["grade_records"], "statistics": state["statistics"], "kpis": kpis, "charts": state["charts"],
+              "sources": [{"document_id": item["document_id"], "filename": item["filename"]} for item in state["documents"]],
+              "limitations": " ".join(analysis["limitations"] or ["Analysis is limited to extracted document content."])}
     return {"report": report}
 
 

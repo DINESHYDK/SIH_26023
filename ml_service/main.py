@@ -4,18 +4,23 @@ FastAPI application exposing document processing and query endpoints.
 Problem Statement ID: 26023 | Ministry of Coal / CIL (CMPDI)
 """
 
+import base64
+import json
 import os
 import uuid
 from datetime import date
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, Response
 from pydantic import BaseModel, root_validator
 from typing import Optional, Union
 from agents.document_ingestion import ingest_pdf, is_typed_pdf
 from agents.gemini_rate_limiter import GeminiRateLimitExceeded
-from agents.query_agent import stream_document_answer
+from agents.query_agent import prepare_query, stream_prepared_answer
 from agents.report_agent import generate_report
+from agents.scanned_rag import scanned_document_rag
+# Importable once agents.scanned_rag has put the OCR pipeline on sys.path.
+from ingestion.vision_extract import ModelsUnavailable
 import asyncio
 
 app = FastAPI(
@@ -30,6 +35,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Citations"],
 )
 
 
@@ -75,6 +81,10 @@ class ReportRequest(BaseModel):
     @root_validator(skip_on_failure=True)
     def validate_selection(cls, values):
         file_ids, date_from, date_to = values.get("file_ids"), values.get("date_from"), values.get("date_to")
+        # Exactly one selection mode: explicit documents, or every document
+        # uploaded in a date range. Mixing them used to silently drop the range.
+        if file_ids and (date_from or date_to):
+            raise ValueError("Provide either file_ids or date_from/date_to, not both")
         if not file_ids and not (date_from and date_to):
             raise ValueError("Provide file_ids or both date_from and date_to")
         if (date_from is None) != (date_to is None):
@@ -131,6 +141,8 @@ async def process_documents(
             return {"filename": upload.filename, "status": "processed", "result": result}
         except GeminiRateLimitExceeded as exc:
             return {"filename": upload.filename, "status": "rate_limited", "error": str(exc)}
+        except ModelsUnavailable as exc:
+            return {"filename": upload.filename, "status": "unavailable", "error": str(exc)}
         except ValueError as exc:
             return {"filename": upload.filename, "status": "failed", "error": str(exc)}
         except Exception as exc:
@@ -145,6 +157,8 @@ async def process_documents(
         return results[0]["result"]
     if len(uploads) == 1 and results[0]["status"] == "rate_limited":
         raise HTTPException(status_code=429, detail=results[0]["error"])
+    if len(uploads) == 1 and results[0]["status"] == "unavailable":
+        raise HTTPException(status_code=503, detail=results[0]["error"])
     if len(uploads) == 1:
         raise HTTPException(status_code=400, detail=results[0]["error"])
 
@@ -165,16 +179,48 @@ async def query_documents(request: QueryRequest):
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
 
+    # Retrieval runs before streaming so its citations can go out as the
+    # X-Citations header (JSON list; scanned pages carry a page_url whose
+    # JSON holds the Base64 page image). The body stays plain text.
+    try:
+        prepared = await prepare_query(request.query, request.context_doc)
+    except Exception as exc:
+        message = f"Query error: {exc}"
+        return StreamingResponse(iter([message]), media_type="text/plain")
+
     async def generate():
         try:
-            async for chunk in stream_document_answer(request.query, request.context_doc):
+            async for chunk in stream_prepared_answer(prepared):
                 yield chunk
-        except (ValueError, FileNotFoundError) as exc:
-            yield f"Query error: {exc}"
         except Exception as exc:
             yield f"Query error: {exc}"
 
-    return StreamingResponse(generate(),media_type="text/plain")
+    headers = {"X-Citations": json.dumps(prepared["citations"], ensure_ascii=True, separators=(",", ":"))}
+    return StreamingResponse(generate(), media_type="text/plain", headers=headers)
+
+
+def _page_record(document_id: str, page_number: int) -> dict:
+    try:
+        record = scanned_document_rag.page_record(document_id, page_number)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not record:
+        raise HTTPException(status_code=404, detail="Page image not found for this document")
+    return record
+
+
+@app.get("/documents/{document_id}/pages/{page_number}")
+async def get_document_page(document_id: str, page_number: int):
+    """Extraction + Base64 image of one scanned page (from its Vision batch JSON)."""
+    return await asyncio.to_thread(_page_record, document_id, page_number)
+
+
+@app.get("/documents/{document_id}/pages/{page_number}/image")
+async def get_document_page_image(document_id: str, page_number: int):
+    """The same page image as raw bytes, usable directly as an <img> src."""
+    record = await asyncio.to_thread(_page_record, document_id, page_number)
+    return Response(base64.b64decode(record["image_base64"]), media_type=record["image_mime_type"],
+                    headers={"Cache-Control": "private, max-age=86400"})
 
 
 @app.post("/generate-report", status_code=202)

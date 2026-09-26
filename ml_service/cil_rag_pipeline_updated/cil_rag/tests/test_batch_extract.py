@@ -21,18 +21,20 @@ def _page_json(pn, rows=None, cols=("Item", "Value")):
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     monkeypatch.setattr(ve.time, "sleep", lambda s: None)
-    monkeypatch.setattr(ve, "_limiter", ve._RateLimiter(0))
+    monkeypatch.setattr(ve.gemini_rate_limiter, "acquire", lambda: None)
     paths = {}
     for pn in range(1, 9):
         p = tmp_path / f"page_{pn}.png"; p.write_bytes(b"png"); paths[pn] = str(p)
     return paths
 
 
-def _fake_generate(calls, responder):
-    def gen(parts):
+def _fake_generate(calls, responder, models=None):
+    def gen(parts, model=ve.GEMINI_MODEL_NAME):
         labels = [p[1] for p in parts if p[0] == "text" and p[1].startswith("PAGE ")]
         nums = [int(l.split()[1].rstrip(":")) for l in labels]
         calls.append(nums)
+        if models is not None:
+            models.append(model)
         return responder(nums, len(calls))
     return gen
 
@@ -111,3 +113,37 @@ def test_mislabeled_page_numbers_fall_back_to_order(env, monkeypatch):
     monkeypatch.setattr(ve, "_generate_json", _fake_generate(calls, responder))
     out = extract_pages({k: env[k] for k in (5, 6)}, batch_size=2)
     assert sorted(out) == [5, 6] and out[5].section_heading == "H99"
+
+
+def test_overloaded_model_falls_back_to_next_model(env, monkeypatch):
+    calls, models = [], []
+    monkeypatch.setattr(ve, "GEMINI_MODELS", ["primary", "fallback"])
+    def responder(nums, n):
+        if models[-1] == "primary":
+            raise FakeAPIError(503, "503 UNAVAILABLE. This model is currently experiencing high demand.")
+        return json.dumps({"pages": [_page_json(p) for p in nums]}), "STOP"
+    monkeypatch.setattr(ve, "_generate_json", _fake_generate(calls, responder, models))
+    batches = []
+    out = extract_pages({1: env[1], 2: env[2]}, batch_size=8, on_batch=batches.append)
+    assert sorted(out) == [1, 2]
+    assert models == ["primary"] * ve.OVERLOAD_RETRIES + ["fallback"]
+    assert len(batches) == 1 and batches[0].model == "fallback"
+
+
+def test_all_models_overloaded_raises_models_unavailable(env, monkeypatch):
+    monkeypatch.setattr(ve, "GEMINI_MODELS", ["primary", "fallback"])
+    def responder(nums, n):
+        raise FakeAPIError(503, "503 UNAVAILABLE")
+    monkeypatch.setattr(ve, "_generate_json", _fake_generate([], responder))
+    with pytest.raises(ve.ModelsUnavailable):
+        extract_pages({1: env[1]}, batch_size=1)
+
+
+def test_on_batch_receives_the_exact_images_sent(env, monkeypatch):
+    calls = []
+    monkeypatch.setattr(ve, "_generate_json", _fake_generate(
+        calls, lambda nums, n: (json.dumps({"pages": [_page_json(p) for p in nums]}), "STOP")))
+    batches = []
+    extract_pages({k: env[k] for k in (1, 2, 3)}, batch_size=2, on_batch=batches.append)
+    assert [b.page_numbers for b in batches] == [[1, 2], [3]]
+    assert batches[0].images[1] == (b"png", "image/png") and set(batches[0].pages) == {1, 2}

@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import json
 import sqlite3
 import sys
+from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -39,8 +42,31 @@ class ScannedDocumentRAG:
     def _paths(self, document_id: str) -> dict[str, Path]:
         root = DOCUMENT_ROOT / document_id
         return {"root": root, "pdf": root / "source.pdf", "images": root / "page_images",
-                "cache": root / "extracted_pages", "database": root / "structured_store.db",
-                "index": root / "index.pkl"}
+                "cache": root / "extracted_pages", "batches": root / "extracted_pages" / "batches",
+                "database": root / "structured_store.db", "index": root / "index.pkl"}
+
+    def _write_batch_record(self, document_id: str, paths: dict[str, Path], batch) -> None:
+        """Persist one Vision API call as JSON: its extraction plus the Base64
+        of exactly the page images that were sent, so citations can show them."""
+        paths["batches"].mkdir(parents=True, exist_ok=True)
+        numbers = sorted(batch.pages)
+        batch_id = f"batch_{numbers[0]:04d}-{numbers[-1]:04d}"
+        record = {
+            "document_id": document_id, "batch_id": batch_id, "model": batch.model,
+            "created_at": datetime.now(timezone.utc).isoformat(), "page_numbers": numbers,
+            "pages": [{**asdict(batch.pages[number]), "image_mime_type": batch.images[number][1],
+                       "image_base64": base64.b64encode(batch.images[number][0]).decode("ascii")}
+                      for number in numbers],
+        }
+        (paths["batches"] / f"{batch_id}.json").write_text(json.dumps(record), encoding="utf-8")
+        # page -> batch file, merged so a resumed upload keeps earlier batches.
+        index_file = paths["batches"] / "index.json"
+        try:
+            index = json.loads(index_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            index = {}
+        index.update({str(number): f"{batch_id}.json" for number in numbers})
+        index_file.write_text(json.dumps(index, sort_keys=True), encoding="utf-8")
 
     def _persist_page_image_records(self, paths: dict[str, Path], page_numbers: list[int]) -> None:
         """Persist Vision-page JSON with Base64 PNGs, outside retrieval chunks."""
@@ -50,8 +76,8 @@ class ScannedDocumentRAG:
         manifest = []
         with fitz.open(paths["pdf"]) as pdf:
             for number in page_numbers:
-                candidates = list(paths["images"].glob(f"*{number}*.png"))
-                image_path = candidates[0] if candidates else paths["images"] / f"page_{number}.png"
+                # Exact name: a "*1*.png" glob would hand page 1 page_10's image.
+                image_path = paths["images"] / f"page_{number}.png"
                 if not image_path.exists():
                     image_path.write_bytes(pdf[number - 1].get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False).tobytes("png"))
                 record = {"page_number": number, "image_mime_type": "image/png", "image_base64": base64.b64encode(image_path.read_bytes()).decode("ascii")}
@@ -93,7 +119,9 @@ class ScannedDocumentRAG:
             raise ValueError("The PDF has no pages")
 
         index, connection = run_ingestion(
-            str(paths["pdf"]), page_numbers=page_numbers, batch_extract_fn=extract_pages,
+            str(paths["pdf"]), page_numbers=page_numbers,
+            batch_extract_fn=functools.partial(
+                extract_pages, on_batch=functools.partial(self._write_batch_record, document_id, paths)),
             db_path=str(paths["database"]), image_dir=str(paths["images"]),
             cache_dir=str(paths["cache"]),
         )
@@ -145,14 +173,42 @@ class ScannedDocumentRAG:
 
         return result
 
+    def page_record(self, document_id: str, page_number: int) -> dict | None:
+        """A page's extraction plus its Base64 image, for citation previews.
+
+        Prefers the batch JSON (the exact image sent to the model); falls back
+        to the per-page JSON / rendered PNG for documents ingested before batch
+        records existed. None when the page is unknown.
+        """
+        if len(document_id) != 16 or any(c not in "0123456789abcdef" for c in document_id):
+            raise ValueError("document_id is not a valid document ID")
+        paths = self._paths(document_id)
+        try:
+            batch_file = json.loads((paths["batches"] / "index.json").read_text(encoding="utf-8")).get(str(page_number))
+            if batch_file:
+                batch = json.loads((paths["batches"] / batch_file).read_text(encoding="utf-8"))
+                page = next(item for item in batch["pages"] if item["page_number"] == page_number)
+                return {"document_id": document_id, "batch_id": batch["batch_id"], **page}
+        except (OSError, json.JSONDecodeError, StopIteration, KeyError):
+            pass
+        record: dict = {"page_number": page_number}
+        try:
+            record.update(json.loads((paths["cache"] / f"page_{page_number}.json").read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            pass
+        if not record.get("image_base64"):
+            image_path = paths["images"] / f"page_{page_number}.png"
+            if not image_path.exists():
+                return None
+            record.update(image_mime_type="image/png", image_base64=base64.b64encode(image_path.read_bytes()).decode("ascii"))
+        return {"document_id": document_id, "batch_id": None, **record}
+
     def page_image_data_url(self, document_id: str, page_number: int) -> str | None:
         """Return an OCR page as a multimodal LLM input, not textual output."""
-        images = self._paths(document_id)["images"]
-        candidates = list(images.glob(f"*{page_number}*.png"))
-        image_path = candidates[0] if candidates else images / f"page_{page_number}.png"
-        if not image_path.exists():
+        record = self.page_record(document_id, page_number)
+        if not record:
             return None
-        return "data:image/png;base64," + base64.b64encode(image_path.read_bytes()).decode("ascii")
+        return f"data:{record['image_mime_type']};base64,{record['image_base64']}"
 
     def exists(self, document_id: str) -> bool:
         paths = self._paths(document_id)

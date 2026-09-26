@@ -143,7 +143,8 @@ def build_dataset_charts(datasets: list[dict[str, Any]]) -> list[dict[str, Any]]
         chart = normalize_chart({
             "id": f"dataset_{index}", "metric": "extracted_dataset", "type": chart_type,
             "title": dataset.get("title") or "Extracted values",
-            "description": "Values as printed in the source document.",
+            "description": f"Values as printed in {dataset['source']}." if dataset.get("source")
+                           else "Values as printed in the source document.",
             "x_axis": {"label": dataset.get("x_label") or ""},
             # Bars encode length, so they need a zero baseline; lines encode
             # change, so let the axis fit the data (e.g. GPAs of 7.9–8.4).

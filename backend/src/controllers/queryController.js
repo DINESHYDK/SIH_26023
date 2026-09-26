@@ -3,6 +3,49 @@ const QueryHistory = require('../models/QueryHistory');
 
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
 
+// Distinct scanned pages whose images are attached to one answer.
+const MAX_CITATION_IMAGES = 6;
+
+/**
+ * Parse the ML service's X-Citations header ([{page, source, document_id,
+ * document_type, page_url?}]) into the frontend Citation shape. Scanned-page
+ * citations get the Base64 page image that was sent to Gemini Vision, fetched
+ * once per distinct page from the ML page endpoint. Image failures never fail
+ * the answer; that citation just has no preview.
+ */
+const citationsFromHeader = async (header) => {
+  let raw;
+  try {
+    raw = JSON.parse(header || '[]');
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(raw)) return [];
+
+  const images = new Map();
+  for (const item of raw) {
+    if (item.page_url && !images.has(item.page_url) && images.size < MAX_CITATION_IMAGES) {
+      images.set(item.page_url, null);
+    }
+  }
+  await Promise.all([...images.keys()].map(async (pageUrl) => {
+    try {
+      const { data } = await axios.get(`${ML_SERVICE_URL}${pageUrl}`, { timeout: 15000 });
+      images.set(pageUrl, { imageBase64: data.image_base64, imageMimeType: data.image_mime_type });
+    } catch (error) {
+      console.warn(`Citation image unavailable (${pageUrl}):`, error.message);
+    }
+  }));
+
+  return raw.map((item) => ({
+    source: item.source,
+    page: item.page,
+    documentId: item.document_id,
+    documentType: item.document_type,
+    ...(images.get(item.page_url) || {}),
+  }));
+};
+
 const forwardQuery = async (req, res) => {
   try{
     const { query, context_doc } = req.body;
@@ -16,11 +59,12 @@ const forwardQuery = async (req, res) => {
       
       let mlData = mlResponse.data;
 
-      // Adapt plain text streaming response from ML service to expected JSON format
+      // Adapt plain text streaming response from ML service to expected JSON format.
+      // Citations arrive separately in the X-Citations header.
       if (typeof mlData === 'string') {
         mlData = {
           answer: mlData,
-          citations: []
+          citations: await citationsFromHeader(mlResponse.headers['x-citations'])
         };
       }
 

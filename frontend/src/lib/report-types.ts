@@ -102,6 +102,16 @@ export interface DocumentsListResponse {
 export interface Citation {
   source: string;
   page: number;
+  /** ML content-hash id of the cited document. */
+  documentId?: string;
+  documentType?: "typed" | "scanned";
+  /**
+   * Scanned pages only: the page image exactly as sent to Gemini Vision
+   * (from the ML service's per-batch JSON). Absent for typed documents or
+   * when the image could not be fetched.
+   */
+  imageBase64?: string;
+  imageMimeType?: string;
 }
 
 export interface QueryResponse {
